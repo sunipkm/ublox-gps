@@ -1,0 +1,8 @@
+[package]
+name = "ublox-gps"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nmea-parser = "0.11.0"
+serialport = "4.5"
