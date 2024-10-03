@@ -1,12 +1,24 @@
+#![deny(missing_docs)]
+//! # UBX Parser
+//! 
+//! This crate provides a parser for UBX messages from a serial port.
+
+use std::{collections::HashMap, time::Duration};
+
+use bitfield_struct::bitfield;
+use chrono::{DateTime, TimeDelta, Utc};
+
+const GPS_EPOCH: DateTime<Utc> = DateTime::from_timestamp_nanos(315_964_800_000_000_000);
+
 #[non_exhaustive]
 #[repr(u8)]
 #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+/// UBX message classes
 pub enum UbxClass {
+    /// Receiver messages
     Receiver(UbxRxm) = 0x2,
-    Info(UbxInf) = 0x4,
+    /// Acknowledgement messages
     Ack(UbxAck) = 0x5,
-    MultiGnss(UbxMga) = 0x13,
-    Logging(UbxLog) = 0x21,
 }
 
 impl TryFrom<(u8, u8)> for UbxClass {
@@ -20,19 +32,8 @@ impl TryFrom<(u8, u8)> for UbxClass {
                     0x14 => UbxRxm::MeasX,
                     0x15 => UbxRxm::RawX,
                     0x59 => UbxRxm::Rlm,
-                    0x32 => UbxRxm::Rtcm,
                     0x13 => UbxRxm::SfrbX,
                     _ => return Err("Invalid UBX RXM ID"),
-                }
-            }),
-            0x4 => UbxClass::Info({
-                match id {
-                    0x0 => UbxInf::Error,
-                    0x2 => UbxInf::Notice,
-                    0x3 => UbxInf::Test,
-                    0x1 => UbxInf::Warning,
-                    0x4 => UbxInf::Debug,
-                    _ => return Err("Invalid UBX INF ID"),
                 }
             }),
             0x5 => UbxClass::Ack({
@@ -40,23 +41,6 @@ impl TryFrom<(u8, u8)> for UbxClass {
                     0x1 => UbxAck::Ack,
                     0x0 => UbxAck::Nack,
                     _ => return Err("Invalid UBX ACK ID"),
-                }
-            }),
-            0x13 => UbxClass::MultiGnss({
-                match id {
-                    0x60 => UbxMga::AckData0,
-                    0x80 => UbxMga::Dbd,
-                    _ => return Err("Invalid UBX MGA ID"),
-                }
-            }),
-            0x21 => UbxClass::Logging({
-                match id {
-                    0xe => UbxLog::FindTime,
-                    0x8 => UbxLog::Info,
-                    0xb => UbxLog::RetrievePos,
-                    0xd => UbxLog::RetrieveString,
-                    0xf => UbxLog::RetrievePosExtra,
-                    _ => return Err("Invalid UBX LOG ID"),
                 }
             }),
             _ => return Err("Invalid UBX class"),
@@ -68,84 +52,328 @@ impl TryFrom<(u8, u8)> for UbxClass {
 #[non_exhaustive]
 #[repr(u8)]
 #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+/// UBX message acknowledgement types
 pub enum UbxAck {
+    /// Ack
     Ack = 0x1,
+    /// Nack
     Nack = 0x0,
 }
 
 #[non_exhaustive]
 #[repr(u8)]
 #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+/// UBX RXM message types
 pub enum UbxRxm {
+    /// Measured navigation data
     MeasX = 0x14,
+    /// Raw receiver measurements
     RawX = 0x15,
+    /// Galileo SAR RLM report
     Rlm = 0x59,
-    Rtcm = 0x32,
+    /// Broadcast Navigation Data Subframe
     SfrbX = 0x13,
 }
 
-#[non_exhaustive]
-#[repr(u8)]
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-pub enum UbxInf {
-    Error = 0x0,
-    Notice = 0x2,
-    Test = 0x3,
-    Warning = 0x1,
-    Debug = 0x4,
-}
-
-#[non_exhaustive]
-#[repr(u8)]
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-pub enum UbxLog {
-    FindTime = 0xe,
-    Info = 0x8,
-    RetrievePos = 0xb,
-    RetrieveString = 0xd,
-    RetrievePosExtra = 0xf,
-}
-
-#[non_exhaustive]
-#[repr(u8)]
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-pub enum UbxMga {
-    AckData0 = 0x60,
-    Dbd = 0x80,
-}
+/// Convert UBX message to a specific UBX format
 
 pub trait UbxFormat {
+    /// Convert UBX message to a specific UBX format
     fn from_message(message: UbxMessage) -> Result<Self, &'static str>
     where
         Self: Sized;
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct UbxRxmRawx {
-    pub rcv_tow: f64,
-    pub week: u16,
-    pub leap_s: i8,
-    pub num_meas: u8,
-    pub rec_stat: u8,
-    pub version: u8,
-    pub data: Vec<UbxRxmRawxMes>,
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+/// A GNSS satellite
+pub enum GnssSatellite {
+    /// A GPS satellite (ID: 0 - 32)
+    Gps(u8),
+    /// A SBAS satellite (ID: 120 - 158)
+    Sbas(u8),
+    /// A Galileo satellite (ID: 1 - 36)
+    Galileo(u8),
+    /// A Beidou satellite (ID: 1 - 37)
+    Beidou(u8),
+    /// A QZSS satellite (ID: 1-5)
+    Qzss(u8),
+    /// A Glonass satellite (ID: 1 - 32)
+    Glonass(u8),
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct UbxRxmRawxMes {
-    pub pseudo_range: f64,
-    pub carrier_phase: f64,
-    pub doppler: f32,
-    pub gnss_id: u8,
-    pub sat_id: u8,
-    pub sig_id: u8,
-    pub freq_id: u8,
-    pub locktime: u16,
-    pub cno: u8,
-    pub pr_stdev: u8,
-    pub cp_stdev: u8,
-    pub do_stdev: u8,
-    pub trk_stat: u8,
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+/// A GNSS frequency channel
+pub enum GnssFreq {
+    /// GPS frequency channel
+    Gps(GpsFreq),
+    /// Galileo frequency channel
+    Galileo(GalileoFreq),
+    /// Beidou frequency channel
+    Beidou(BeidouFreq),
+    /// Glonass frequency channel
+    Glonass(GlonassFreq, i8),
+    /// QZSS frequency channel
+    Qzss(QzssFreq),
+}
+
+fn parse_sat_ids(
+    gnss_id: u8,
+    sat_id: u8,
+    sig_id: u8,
+    glonass: i8,
+) -> Result<(GnssSatellite, GnssFreq), &'static str> {
+    use GnssSatellite::*;
+    let sat = GnssSatellite::try_from((gnss_id, sat_id))?;
+    let freq = match sat {
+        Gps(_) => GpsFreq::try_from(sig_id)?.into(),
+        Sbas(_) => GpsFreq::try_from(sig_id)?.into(),
+        Galileo(_) => GalileoFreq::try_from(sig_id)?.into(),
+        Beidou(_) => BeidouFreq::try_from(sig_id)?.into(),
+        Qzss(_) => QzssFreq::try_from(sig_id)?.into(),
+        Glonass(_) => GlonassFreq::try_from((sig_id, glonass))?.into(),
+    };
+    Ok((sat, freq))
+}
+
+impl TryFrom<(u8, u8)> for GnssSatellite {
+    type Error = &'static str;
+
+    fn try_from(value: (u8, u8)) -> Result<Self, Self::Error> {
+        let (gnss_id, sat_id) = value;
+        let res = match gnss_id {
+            0 => GnssSatellite::Gps(sat_id),
+            1 => GnssSatellite::Sbas(sat_id),
+            2 => GnssSatellite::Galileo(sat_id),
+            3 => GnssSatellite::Beidou(sat_id),
+            5 => GnssSatellite::Qzss(sat_id),
+            6 => GnssSatellite::Glonass(sat_id),
+            _ => return Err("Invalid GNSS ID"),
+        };
+        Ok(res)
+    }
+}
+
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+/// GPS frequency channels
+pub enum GpsFreq {
+    /// GPS L1 C/A frequency
+    L1CA,
+    /// GPS L2C-L frequency
+    L2CL,
+    /// GPS L2C-M frequency
+    L2CM,
+}
+
+impl Into<GnssFreq> for GpsFreq {
+    fn into(self) -> GnssFreq {
+        GnssFreq::Gps(self)
+    }
+}
+
+impl TryFrom<u8> for GpsFreq {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(GpsFreq::L1CA),
+            3 => Ok(GpsFreq::L2CL),
+            4 => Ok(GpsFreq::L2CM),
+            _ => Err("Invalid GPS frequency ID"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+/// Galileo frequency channels
+pub enum GalileoFreq {
+    /// Galileo E1C frequency
+    E1C,
+    /// Galileo E1B frequency
+    E1B,
+    /// Galileo E5b-I frequency
+    E5bl,
+    /// Galileo E5b-Q frequency
+    E5bQ,
+}
+
+impl Into<GnssFreq> for GalileoFreq {
+    fn into(self) -> GnssFreq {
+        GnssFreq::Galileo(self)
+    }
+}
+
+impl TryFrom<u8> for GalileoFreq {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(GalileoFreq::E1C),
+            1 => Ok(GalileoFreq::E1B),
+            5 => Ok(GalileoFreq::E5bl),
+            6 => Ok(GalileoFreq::E5bQ),
+            _ => Err("Invalid Galileo frequency ID"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[allow(non_camel_case_types)]
+/// Beidou frequency channels
+pub enum BeidouFreq {
+    /// Beidou B1I D1 frequency
+    B1I_D1,
+    /// Beidou B1I D2 frequency
+    B1I_D2,
+    /// Beidou B2I D1 frequency
+    B2I_D1,
+    /// Beidou B2I D2 frequency
+    B2I_D2,
+}
+
+impl Into<GnssFreq> for BeidouFreq {
+    fn into(self) -> GnssFreq {
+        GnssFreq::Beidou(self)
+    }
+}
+
+impl TryFrom<u8> for BeidouFreq {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(BeidouFreq::B1I_D1),
+            1 => Ok(BeidouFreq::B1I_D2),
+            2 => Ok(BeidouFreq::B2I_D1),
+            3 => Ok(BeidouFreq::B2I_D2),
+            _ => Err("Invalid Beidou frequency ID"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+/// Glonass frequency channels
+pub enum GlonassFreq {
+    /// Glonass L1OF frequency (Channel: -7 to 6)
+    L1OF(i8),
+    /// Glonass L2OF frequency (Channel: -7 to 6)
+    L2OF(i8),
+}
+
+impl Into<GnssFreq> for GlonassFreq {
+    fn into(self) -> GnssFreq {
+        GnssFreq::Glonass(self, 0)
+    }
+}
+
+impl TryFrom<(u8, i8)> for GlonassFreq {
+    type Error = &'static str;
+
+    fn try_from(value: (u8, i8)) -> Result<Self, Self::Error> {
+        let (value, channel) = value;
+        match value {
+            0 => Ok(GlonassFreq::L1OF(channel)),
+            2 => Ok(GlonassFreq::L2OF(channel)),
+            _ => Err("Invalid Glonass frequency ID"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+/// QZSS frequency channels
+pub enum QzssFreq {
+    /// QZSS L1CA frequency
+    L1CA,
+}
+
+impl Into<GnssFreq> for QzssFreq {
+    fn into(self) -> GnssFreq {
+        GnssFreq::Qzss(self)
+    }
+}
+
+impl TryFrom<u8> for QzssFreq {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(QzssFreq::L1CA),
+            _ => Err("Invalid QZSS frequency ID"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+/// UBX RXM-RAWX message
+pub struct UbxRxmRawx {
+    /// Timestamp of the message
+    pub timestamp: DateTime<Utc>,
+    /// Receiver status
+    pub receiver_status: RecvStat,
+    /// Message version (0x1)
+    pub version: u8,
+    /// Carrier pseudorange, phase and Doppler measurements
+    pub meas: HashMap<GnssSatellite, Vec<CarrierMeas>>,
+}
+
+#[derive(Debug, Clone)]
+/// Carrier phase and Doppler measurements
+pub struct CarrierMeas {
+    /// GNSS satellite and frequency channel
+    pub channel: GnssFreq,
+    /// Pseudo-range measurement and standard deviation (m)
+    pub pseudo_range: Option<(f64, f32)>,
+    /// Carrier-phase measurement and standard deviation (Hz)
+    pub carrier_phase: Option<(f64, f32)>,
+    /// Doppler measurement and standard deviation (Hz)
+    ///
+    /// # Note: Positive Doppler indicates satellite moving towards the receiver
+    pub doppler: (f32, f32),
+    /// Carrier phase locktime counter (max. 64500 ms)
+    pub locktime: Duration,
+    /// Carrier-to-noise ratio (dB-Hz)
+    pub carrier_snr: u8,
+    /// Tracking status and phase lock flags
+    pub trk_stat: TrkStat,
+}
+
+#[bitfield(u8)]
+/// Tracking status and phase lock flags for carrier phase and pseudo-range measurements
+pub struct TrkStat {
+    #[bits(1)]
+    /// Pseudo-range measurement is valid
+    pr_valid: bool,
+    #[bits(1)]
+    /// Carrier-phase measurement is valid
+    cp_valid: bool,
+    #[bits(1)]
+    /// Half-cycle ambiguity is fixed
+    half_cycle: bool,
+    #[bits(1)]
+    /// Sub-half-cycle ambiguity is fixed
+    sub_half_cycle: bool,
+    #[bits(4)]
+    _reserved: u8,
+}
+
+#[bitfield(u8)]
+/// Receiver status flags
+pub struct RecvStat {
+    #[bits(1)]
+    /// Leap second information is available
+    leap_second_ready: bool,
+    #[bits(1)]
+    /// Receiver clock is reset. Usually the receiver clock
+    /// is changed in increments of integer milliseconds.
+    clk_reset: bool,
+    #[bits(6)]
+    _reserved: u8,
+}
+
+impl UbxRxmRawx {
+    /// Remove carrier phase and pseudo-range measurements where only one frequency band is available
+    pub fn remove_single_band(&mut self) {
+        self.meas.retain(|_, v| v.len() > 1);
+    }
 }
 
 impl UbxFormat for UbxRxmRawx {
@@ -153,89 +381,124 @@ impl UbxFormat for UbxRxmRawx {
     where
         Self: Sized,
     {
-        if message.class != 0x2 || message.id != 0x15 {
-            return Err("Invalid UBX message class or ID");
+        if message.class != 0x2 {
+            return Err("Invalid UBX message class");
+        }
+        if message.id != 0x15 {
+            return Err("Invalid UBX message ID");
         }
         if message.payload.len() < 16 {
-            return Err("Invalid UBX message length");
+            return Err("Invalid UBX message length, malformed message");
         }
         let num_mes = (message.payload.len() - 16) / 32;
-        let mut data = Vec::new();
-        let mut msg = UbxRxmRawx {
-            rcv_tow: f64::from_le_bytes(
-                message.payload[0..8]
-                    .try_into()
-                    .map_err(|_| "Failed to convert bytes to f64")?,
-            ),
-            week: u16::from_le_bytes(
-                message.payload[8..10]
-                    .try_into()
-                    .map_err(|_| "Failed to convert bytes to u16")?,
-            ),
-            leap_s: i8::from_le_bytes(
-                message.payload[10..11]
-                    .try_into()
-                    .map_err(|_| "Failed to convert bytes to i8")?,
-            ),
-            num_meas: message.payload[11],
-            rec_stat: message.payload[12],
-            version: message.payload[13],
-            ..Default::default()
-        };
-        if msg.num_meas != num_mes as u8 {
-            return Err("Invalid number of measurements");
+        if message.payload[11] != num_mes as u8 {
+            return Err("Invalid number of measurements, malformed message");
         }
+        let time_of_week = f64::from_le_bytes(
+            message.payload[0..8]
+                .try_into()
+                .map_err(|_| "Failed to convert bytes to f64")?,
+        );
+        let week = u16::from_le_bytes(
+            message.payload[8..10]
+                .try_into()
+                .map_err(|_| "Failed to convert bytes to u16")?,
+        );
+        let leap_second = i8::from_le_bytes(
+            message.payload[10..11]
+                .try_into()
+                .map_err(|_| "Failed to convert bytes to i8")?,
+        );
+        let mut week =
+            TimeDelta::try_weeks(week as i64).ok_or("Failed to convert week to duration")?;
+        let dur = Duration::from_secs_f64(time_of_week) + Duration::from_secs(leap_second as u64);
+        week = week
+            + TimeDelta::from_std(dur).map_err(|_| "Failed to convert duration to time delta")?;
+        let mut msg = UbxRxmRawx {
+            timestamp: GPS_EPOCH + week,
+            receiver_status: message.payload[12].into(),
+            version: message.payload[13],
+            meas: Default::default(),
+        };
         for i in 0..num_mes {
             let start = 16 + i * 32;
+            let gnss_id = message.payload[start + 20];
+            let sat_id = message.payload[start + 21];
+            let sig_id = message.payload[start + 22];
+            let glonass = message.payload[start + 23] as i8;
+            let (sat, freq) = parse_sat_ids(gnss_id, sat_id, sig_id, glonass)?;
+            let trk_stat: TrkStat = message.payload[start + 30].into();
+            let pr = if trk_stat.cp_valid() {
+                let pr = f64::from_le_bytes(
+                    message.payload[start + 0..start + 8]
+                        .try_into()
+                        .map_err(|_| "Failed to convert bytes to pseudo-range")?,
+                );
+                let pr_std = 0.01f32 * ((2i32.pow(message.payload[start + 27].into())) as f32);
+                Some((pr, pr_std))
+            } else {
+                None
+            };
+            let cp = if trk_stat.cp_valid() {
+                let cp = f64::from_le_bytes(
+                    message.payload[start + 8..start + 16]
+                        .try_into()
+                        .map_err(|_| "Failed to convert bytes to carrier-phase")?,
+                );
+                let cp_std = 0.004f32 * message.payload[start + 28] as f32;
+                Some((cp, cp_std))
+            } else {
+                None
+            };
+            let doppler = {
+                let doppler = f32::from_le_bytes(
+                    message.payload[start + 16..start + 20]
+                        .try_into()
+                        .map_err(|_| "Failed to convert bytes to doppler")?,
+                );
+                let doppler_std =
+                    0.002f32 * ((2i32.pow(message.payload[start + 29].into())) as f32);
+                (doppler, doppler_std)
+            };
+            let locktime = Duration::from_millis(u16::from_le_bytes(
+                message.payload[start + 24..start + 26]
+                    .try_into()
+                    .map_err(|_| "Failed to convert bytes to locktime")?,
+            ) as u64);
             let mes = {
-                UbxRxmRawxMes {
-                    pseudo_range: f64::from_le_bytes(
-                        message.payload[start..start + 8]
-                            .try_into()
-                            .map_err(|_| "Failed to convert bytes to f64")?,
-                    ),
-                    carrier_phase: f64::from_le_bytes(
-                        message.payload[start + 8..start + 16]
-                            .try_into()
-                            .map_err(|_| "Failed to convert bytes to f64")?,
-                    ),
-                    doppler: f32::from_le_bytes(
-                        message.payload[start + 16..start + 20]
-                            .try_into()
-                            .map_err(|_| "Failed to convert bytes to f32")?,
-                    ),
-                    gnss_id: message.payload[start + 20],
-                    sat_id: message.payload[start + 21],
-                    sig_id: message.payload[start + 22],
-                    freq_id: message.payload[start + 23],
-                    locktime: u16::from_le_bytes(
-                        message.payload[start + 24..start + 26]
-                            .try_into()
-                            .map_err(|_| "Failed to convert bytes to u16")?,
-                    ),
-                    cno: message.payload[start + 26],
-                    pr_stdev: message.payload[start + 27],
-                    cp_stdev: message.payload[start + 28],
-                    do_stdev: message.payload[start + 29],
-                    trk_stat: message.payload[start + 30],
+                CarrierMeas {
+                    channel: freq,
+                    pseudo_range: pr,
+                    carrier_phase: cp,
+                    doppler,
+                    locktime,
+                    carrier_snr: message.payload[start + 26],
+                    trk_stat,
                 }
             };
-            data.push(mes);
+            msg.meas
+                .entry(sat)
+                .and_modify(|e| e.push(mes.clone()))
+                .or_insert(vec![mes]);
         }
-        msg.data = data;
         Ok(msg)
     }
 }
 
+/// UBX message
 pub struct UbxMessage {
+    /// Message class
     pub class: u8,
+    /// Message ID
     pub id: u8,
+    /// Message payload
     pub payload: Vec<u8>,
     crc_a: u8,
     crc_b: u8,
 }
 
 impl UbxMessage {
+    /// Validate UBX message
     pub fn validate(&self) -> bool {
         let mut ck_a: u8 = 0;
         let mut ck_b: u8 = 0;
@@ -256,6 +519,8 @@ impl UbxMessage {
     }
 }
 
+/// Remove UBX message bytes from buffer, 
+/// parse and return UBX messages, and return the remaining bytes
 pub fn split_ubx(mut buf: Vec<u8>) -> (Vec<UbxMessage>, Vec<u8>) {
     let mut messages = Vec::new();
     while let Ok((start, end, class, id)) = find_rxm_raw(&buf) {
@@ -329,10 +594,9 @@ fn rxm_checksum(buf: &[u8]) -> (u8, u8) {
 }
 
 mod test {
-    use super::UbxFormat;
-
     #[test]
     fn test_rxm_checksum() {
+        use super::UbxFormat;
         let payload = [
             0xB5, 0x62, 0x02, 0x15, 0x70, 0x03, 0x17, 0xD9, 0xCE, 0xF7, 0x3F, 0xB4, 0x14, 0x41,
             0x1E, 0x09, 0x12, 0x1B, 0x01, 0x01, 0xE1, 0xD8, 0x60, 0xF4, 0x00, 0xDD, 0x8F, 0x1E,
@@ -470,7 +734,7 @@ mod test {
             0x06, 0x0E, 0x02, 0x00, 0x5C, 0x9E, 0x20, 0x07, 0x05, 0x08, 0x07, 0x00, 0xC7, 0x82,
         ];
 
-        let (msg, _) = super::split_ubx(payload.to_vec()); 
+        let (msg, _) = super::split_ubx(payload.to_vec());
         {
             for m in msg {
                 if let Ok(rxm) = super::UbxRxmRawx::from_message(m) {
@@ -478,7 +742,7 @@ mod test {
                 }
             }
         }
-        let (msg, _) = super::split_ubx(payload2.to_vec()); 
+        let (msg, _) = super::split_ubx(payload2.to_vec());
         {
             for m in msg {
                 if let Ok(rxm) = super::UbxRxmRawx::from_message(m) {

@@ -3,12 +3,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nmea_parser::{NmeaParser, ParsedMessage};
 use ubx::{split_ubx, UbxFormat, UbxRxmRawx};
 
-mod ubx;
+pub mod ubx;
+pub mod nmea;
 
 fn main() {
-    let mut serial_port = serialport::new("/dev/ttyUSB0", 38400)
+    let mut serial_port = serialport::new("/dev/ttyUSB0", 115200)
         .open()
         .expect("Failed to open serial port");
     serial_port
@@ -28,37 +30,54 @@ fn main() {
         if buf.is_empty() {
             continue;
         }
+        println!("----------------------------------------");
         print!("Read: {} bytes\t", buf.len());
         now = Instant::now();
         println!("Time: {} s", (now - last).as_secs_f32());
-        let (ubx, buf) = split_ubx(buf);
-        for msg in ubx {
-            println!(
-                "Class: {:02X} ID: {:02X} Valid: {}",
-                msg.class,
-                msg.id,
-                msg.validate()
-            );
-            if let Ok(msg) = UbxRxmRawx::from_message(msg) {
-                println!("{:?}", msg);
-            }
+        let (rxm, nmea) = parse_messages(buf, &mut parser);
+        for msg in nmea {
+            // println!("{:#?}", msg);
         }
-        println!("Remaining: {}", buf.len());
-        if let Ok(line) = std::str::from_utf8(&buf) {
-            let lines = line.lines();
-            for line in lines {
-                if let Ok(msg) = parser.parse_sentence(line) {
-                    println!("{:?}", msg);
-                } else {
-                    println!("Failed to parse: {}", line);
-                }
-            }
+        for mut msg in rxm {
+            msg.remove_single_band();
+            // println!("{:#?}", msg);
         }
+        println!("++++++++++++++++++++++++++++++++++++++++");
         // println!("{:?}", buf);
     }
 }
 
-fn parse_messages(buf: &[u8]) {
-    // 1. Split the buffer into messages
-    // 1a. Find the binary message
+fn parse_messages(buf: Vec<u8>, parser: &mut NmeaParser) -> (Vec<UbxRxmRawx>, Vec<ParsedMessage>) {
+    // 1. Separate into UBX and NMEA messages
+    let (ubx, buf) = split_ubx(buf);
+    // 2. Parse UBX messages
+    let mut rxm = Vec::new();
+    for msg in ubx {
+        if let Ok(msg) = UbxRxmRawx::from_message(msg) {
+            rxm.push(msg);
+        }
+    }
+    // 3. Parse NMEA messages
+    let mut nmea = Vec::new();
+    if let Ok(line) = std::str::from_utf8(&buf) {
+        println!("{}", line);
+        let lines = line.lines();
+        for line in lines {
+            if let Ok(msg) = parser.parse_sentence(line) {
+                match &msg {
+                    ParsedMessage::Incomplete => {
+                        println!("{line}:\tIncomplete");
+                        // continue;
+                    }
+                    _ => {
+
+                    }
+                };
+                nmea.push(msg);
+            } else {
+                println!("\tFailed to parse");
+            }
+        }
+    }
+    (rxm, nmea)
 }
