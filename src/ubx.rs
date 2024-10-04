@@ -462,30 +462,6 @@ pub struct UbxMessage {
     pub id: u8,
     /// Message payload
     pub payload: Vec<u8>,
-    crc_a: u8,
-    crc_b: u8,
-}
-
-impl UbxMessage {
-    /// Validate UBX message
-    pub fn validate(&self) -> bool {
-        let mut ck_a: u8 = 0;
-        let mut ck_b: u8 = 0;
-        ck_a = ck_a.wrapping_add(self.class);
-        ck_b = ck_b.wrapping_add(ck_a);
-        ck_a = ck_a.wrapping_add(self.id);
-        ck_b = ck_b.wrapping_add(ck_a);
-        let length = self.payload.len() as u16;
-        for byte in length.to_le_bytes().iter() {
-            ck_a = ck_a.wrapping_add(*byte);
-            ck_b = ck_b.wrapping_add(ck_a);
-        }
-        for byte in self.payload.iter() {
-            ck_a = ck_a.wrapping_add(*byte);
-            ck_b = ck_b.wrapping_add(ck_a);
-        }
-        ck_a == self.crc_a && ck_b == self.crc_b
-    }
 }
 
 /// Remove UBX message bytes from buffer, 
@@ -495,14 +471,12 @@ pub fn split_ubx(mut buf: Vec<u8>) -> (Vec<UbxMessage>, Vec<u8>) {
     while let Ok((start, end, class, id)) = find_rxm_raw(&buf) {
         let mut payload: Vec<u8> = buf.drain(start..end).collect();
         let mut payload = payload.split_off(6);
-        let crc_b = payload.pop().unwrap();
-        let crc_a = payload.pop().unwrap();
+        let _ = payload.pop().unwrap();
+        let _ = payload.pop().unwrap();
         messages.push(UbxMessage {
             class,
             id,
             payload,
-            crc_a,
-            crc_b,
         });
     }
     (messages, buf)

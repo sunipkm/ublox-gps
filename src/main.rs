@@ -3,12 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nmea::{GpsError, NmeaGpsInfo, RawNmea};
-use nmea_parser::{NmeaParser, ParsedMessage};
-use ubx::{split_ubx, UbxFormat, UbxGpsInfo, UbxRxmRawx};
-
-pub mod ubx;
-pub mod nmea;
+use ublox_gps::parse_messages;
 
 fn main() {
     let mut serial_port = serialport::new("/dev/ttyUSB0", 115200)
@@ -17,7 +12,7 @@ fn main() {
     serial_port
         .set_timeout(Duration::from_secs_f32(0.1))
         .expect("Failed to set timeout");
-    let mut ofile = std::fs::File::create("gps_data.txt").expect("Failed to create file");
+    let mut ofile = std::fs::File::create("gps_data.bin").expect("Failed to create file");
     let mut now = Instant::now();
     loop {
         let last = now;
@@ -33,6 +28,9 @@ fn main() {
         }
         if ofile.write_all(&buf).is_err() {
             println!("Failed to write to file");
+        }
+        if ofile.write_all(b"\r\r\n\n\r\r\n\n").is_err() {
+            println!("Failed to write separator to file");
         }
         println!("----------------------------------------");
         print!("Read: {} bytes\t", buf.len());
@@ -57,22 +55,4 @@ fn main() {
         println!("++++++++++++++++++++++++++++++++++++++++");
         // println!("{:?}", buf);
     }
-}
-
-fn parse_messages(buf: Vec<u8>) -> Result<UbxGpsInfo, GpsError> {
-    // 1. Separate into UBX and NMEA messages
-    let (ubx, buf) = split_ubx(buf);
-    // 2. Parse UBX messages
-    let mut rxm = Vec::new();
-    for msg in ubx {
-        if let Ok(msg) = UbxRxmRawx::from_message(msg) {
-            rxm.push(msg);
-        }
-    }
-    // 3. Parse NMEA messages
-    let buf = std::str::from_utf8(&buf).map_err(|e| GpsError::ParseError(e.to_string()))?;
-    let gpsmsg = RawNmea::parse_str(buf);
-    let gpsmsg = NmeaGpsInfo::create(&gpsmsg)?;
-    let gpsinfo = UbxGpsInfo::new(gpsmsg, rxm.pop());
-    Ok(gpsinfo)
 }

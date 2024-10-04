@@ -25,7 +25,8 @@ pub enum GnssSatellite {
 impl Serialize for GnssSatellite {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer {
+        S: serde::Serializer,
+    {
         match self {
             Self::Gps(svid) => serializer.serialize_str(&format!("GP{:02X}", svid)),
             Self::Sbas(svid) => serializer.serialize_str(&format!("GN{:02X}", svid)),
@@ -37,10 +38,11 @@ impl Serialize for GnssSatellite {
     }
 }
 
-impl<'de> Deserialize <'de> for GnssSatellite {
+impl<'de> Deserialize<'de> for GnssSatellite {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de> {
+        D: serde::Deserializer<'de>,
+    {
         let s = String::deserialize(deserializer)?;
         let cls = s[..2].as_bytes();
         let svid = u8::from_str_radix(&s[2..], 16).unwrap_or_default();
@@ -49,7 +51,7 @@ impl<'de> Deserialize <'de> for GnssSatellite {
 }
 
 impl GnssSatellite {
-    pub fn from_nmea_svid(cls: &[u8], svid: u8) -> Self {
+    pub(crate) fn from_nmea_svid(cls: &[u8], svid: u8) -> Self {
         match cls {
             b"GP" => Self::Gps(svid),
             b"GB" => Self::Beidou(svid),
@@ -61,7 +63,7 @@ impl GnssSatellite {
         }
     }
 
-    pub fn from_ubx(cls: u8, svid: u8) -> Self {
+    pub(crate) fn from_ubx(cls: u8, svid: u8) -> Self {
         match cls {
             0 => Self::Gps(svid),
             1 => Self::Sbas(svid),
@@ -75,13 +77,15 @@ impl GnssSatellite {
 }
 
 #[derive(Debug, Clone)]
+/// A struct containing raw NMEA data
 pub struct RawNmea {
-    pub id: [u8; 2],
-    pub class: [u8; 3],
-    pub data: String,
+    /// The 'Talker ID'
+    id: [u8; 2],
+    data: String,
 }
 
 impl RawNmea {
+    /// Parse a string of NMEA data into a hashmap of [`RawNmea`] data
     pub fn parse_str(data: &str) -> HashMap<[u8; 3], Vec<RawNmea>> {
         lazy_static! {
             static ref RE: Regex = Regex::new(
@@ -103,14 +107,12 @@ impl RawNmea {
                         .and_modify(|e: &mut Vec<RawNmea>| {
                             e.push(RawNmea {
                                 id,
-                                class: kind,
                                 data: caps["data"].to_string(),
                             })
                         })
                         .or_insert_with(|| {
                             vec![RawNmea {
                                 id,
-                                class: kind,
                                 data: caps["data"].to_string(),
                             }]
                         });
@@ -149,17 +151,22 @@ pub struct NmeaGpsInfo {
 }
 
 #[derive(Error, Clone, Debug)]
+/// An error type for GPS parsing
 pub enum GpsError {
+    /// No fix has been acquired
     #[error("No ZDA data, has fix been acquired?")]
     NoFix,
+    /// The pattern was not found
     #[error("Pattern not found")]
     PatternNotFound,
+    /// Failed to parse data
     #[error("Failed to parse ZDA data: {0}")]
     ParseError(String),
 }
 
 impl NmeaGpsInfo {
-    pub fn create(data: &HashMap<[u8; 3], Vec<RawNmea>>) -> Result<Self, GpsError> {
+    /// Create a new GPS info struct from a hashmap of [`RawNmea`] data
+    pub(crate) fn create(data: &HashMap<[u8; 3], Vec<RawNmea>>, process_gsv: bool) -> Result<Self, GpsError> {
         if !data.contains_key(b"ZDA") || data[b"ZDA"].is_empty() {
             return Err(GpsError::NoFix);
         }
@@ -196,7 +203,7 @@ impl NmeaGpsInfo {
                 info.vdop = gsa["vdop"].parse().unwrap_or_default();
             }
         }
-        if data.contains_key(b"GSV") {
+        if process_gsv && data.contains_key(b"GSV") {
             data[b"GSV"]
                 .iter()
                 .filter_map(|x| {
@@ -384,6 +391,6 @@ mod test {
         //         super::parse_gsv(&x.data)
         //     )
         // });
-        println!("{:?}", super::NmeaGpsInfo::create(&nmea));
+        println!("{:?}", super::NmeaGpsInfo::create(&nmea, true));
     }
 }
