@@ -8,6 +8,8 @@ use std::{collections::HashMap, time::Duration};
 use bitfield_struct::bitfield;
 use chrono::{DateTime, TimeDelta, Utc};
 
+use crate::nmea::{GnssSatellite, NmeaGpsInfo};
+
 const GPS_EPOCH: DateTime<Utc> = DateTime::from_timestamp_nanos(315_964_800_000_000_000);
 
 #[non_exhaustive]
@@ -85,23 +87,6 @@ pub trait UbxFormat {
 }
 
 #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-/// A GNSS satellite
-pub enum GnssSatellite {
-    /// A GPS satellite (ID: 0 - 32)
-    Gps(u8),
-    /// A SBAS satellite (ID: 120 - 158)
-    Sbas(u8),
-    /// A Galileo satellite (ID: 1 - 36)
-    Galileo(u8),
-    /// A Beidou satellite (ID: 1 - 37)
-    Beidou(u8),
-    /// A QZSS satellite (ID: 1-5)
-    Qzss(u8),
-    /// A Glonass satellite (ID: 1 - 32)
-    Glonass(u8),
-}
-
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 /// A GNSS frequency channel
 pub enum GnssFreq {
     /// GPS frequency channel
@@ -123,7 +108,7 @@ fn parse_sat_ids(
     glonass: i8,
 ) -> Result<(GnssSatellite, GnssFreq), &'static str> {
     use GnssSatellite::*;
-    let sat = GnssSatellite::try_from((gnss_id, sat_id))?;
+    let sat = GnssSatellite::from_ubx(gnss_id, sat_id);
     let freq = match sat {
         Gps(_) => GpsFreq::try_from(sig_id)?.into(),
         Sbas(_) => GpsFreq::try_from(sig_id)?.into(),
@@ -133,24 +118,6 @@ fn parse_sat_ids(
         Glonass(_) => GlonassFreq::try_from((sig_id, glonass))?.into(),
     };
     Ok((sat, freq))
-}
-
-impl TryFrom<(u8, u8)> for GnssSatellite {
-    type Error = &'static str;
-
-    fn try_from(value: (u8, u8)) -> Result<Self, Self::Error> {
-        let (gnss_id, sat_id) = value;
-        let res = match gnss_id {
-            0 => GnssSatellite::Gps(sat_id),
-            1 => GnssSatellite::Sbas(sat_id),
-            2 => GnssSatellite::Galileo(sat_id),
-            3 => GnssSatellite::Beidou(sat_id),
-            5 => GnssSatellite::Qzss(sat_id),
-            6 => GnssSatellite::Glonass(sat_id),
-            _ => return Err("Invalid GNSS ID"),
-        };
-        Ok(res)
-    }
 }
 
 #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
@@ -164,9 +131,9 @@ pub enum GpsFreq {
     L2CM,
 }
 
-impl Into<GnssFreq> for GpsFreq {
-    fn into(self) -> GnssFreq {
-        GnssFreq::Gps(self)
+impl From<GpsFreq> for GnssFreq {
+    fn from(val: GpsFreq) -> Self {
+        GnssFreq::Gps(val)
     }
 }
 
@@ -196,9 +163,9 @@ pub enum GalileoFreq {
     E5bQ,
 }
 
-impl Into<GnssFreq> for GalileoFreq {
-    fn into(self) -> GnssFreq {
-        GnssFreq::Galileo(self)
+impl From<GalileoFreq> for GnssFreq {
+    fn from(val: GalileoFreq) -> Self {
+        GnssFreq::Galileo(val)
     }
 }
 
@@ -230,9 +197,9 @@ pub enum BeidouFreq {
     B2I_D2,
 }
 
-impl Into<GnssFreq> for BeidouFreq {
-    fn into(self) -> GnssFreq {
-        GnssFreq::Beidou(self)
+impl From<BeidouFreq> for GnssFreq {
+    fn from(val: BeidouFreq) -> Self {
+        GnssFreq::Beidou(val)
     }
 }
 
@@ -259,9 +226,9 @@ pub enum GlonassFreq {
     L2OF(i8),
 }
 
-impl Into<GnssFreq> for GlonassFreq {
-    fn into(self) -> GnssFreq {
-        GnssFreq::Glonass(self, 0)
+impl From<GlonassFreq> for GnssFreq {
+    fn from(val: GlonassFreq) -> Self {
+        GnssFreq::Glonass(val, 0)
     }
 }
 
@@ -285,9 +252,9 @@ pub enum QzssFreq {
     L1CA,
 }
 
-impl Into<GnssFreq> for QzssFreq {
-    fn into(self) -> GnssFreq {
-        GnssFreq::Qzss(self)
+impl From<QzssFreq> for GnssFreq {
+    fn from(val: QzssFreq) -> Self {
+        GnssFreq::Qzss(val)
     }
 }
 
@@ -412,8 +379,7 @@ impl UbxFormat for UbxRxmRawx {
         let mut week =
             TimeDelta::try_weeks(week as i64).ok_or("Failed to convert week to duration")?;
         let dur = Duration::from_secs_f64(time_of_week) + Duration::from_secs(leap_second as u64);
-        week = week
-            + TimeDelta::from_std(dur).map_err(|_| "Failed to convert duration to time delta")?;
+        week += TimeDelta::from_std(dur).map_err(|_| "Failed to convert duration to time delta")?;
         let mut msg = UbxRxmRawx {
             timestamp: GPS_EPOCH + week,
             receiver_status: message.payload[12].into(),
@@ -430,7 +396,7 @@ impl UbxFormat for UbxRxmRawx {
             let trk_stat: TrkStat = message.payload[start + 30].into();
             let pr = if trk_stat.cp_valid() {
                 let pr = f64::from_le_bytes(
-                    message.payload[start + 0..start + 8]
+                    message.payload[start..start + 8]
                         .try_into()
                         .map_err(|_| "Failed to convert bytes to pseudo-range")?,
                 );
@@ -591,6 +557,140 @@ fn rxm_checksum(buf: &[u8]) -> (u8, u8) {
         ck_b = ck_b.wrapping_add(ck_a);
     }
     (ck_a, ck_b)
+}
+
+#[derive(Debug, Clone)]
+/// U-Blox Satellite Carrier Phase Measurements
+pub struct SatPathInfo {
+    /// Satellite elevation angle (degrees)
+    pub elevation: i8,
+    /// Satellite azimuth (degrees)
+    pub azimuth: u16,
+    /// Pseudo-range and carrier phase measurements
+    pub meas: Vec<CarrierMeas>,
+}
+
+/// U-Blox Combined GPS info and Carrier Phase
+#[derive(Debug, Clone)]
+pub struct UbxGpsInfo {
+    /// Timestamp of the message
+    pub timestamp: DateTime<Utc>,
+    /// Location of the fix
+    loc: (f64, f64, f32),
+    /// Altitude above mean sea level
+    msl: f32,
+    /// True heading
+    true_heading: f32,
+    /// Magnetic heading
+    mag_heading: f32,
+    /// Ground speed
+    ground_speed: f32,
+    /// Quality of the fix
+    quality: u8,
+    /// Horizontal dilution of precision
+    hdop: f32,
+    /// Vertical dilution of precision
+    vdop: f32,
+    /// Position dilution of precision
+    pdop: f32,
+    /// Position and carrier phase measurements
+    meas: HashMap<GnssSatellite, SatPathInfo>,
+    /// Receiver status
+    receiver_status: RecvStat,
+}
+
+impl UbxGpsInfo {
+    /// Create a new UBX GPS info struct
+    pub fn new(nmea: NmeaGpsInfo, rxm: UbxRxmRawx) -> Self {
+        let mut meas = HashMap::new();
+        for (sat, v) in rxm.meas {
+            let (el, az) = nmea.sat_views.get(&sat).unwrap_or(&(-1, 0));
+            meas.insert(
+                sat,
+                SatPathInfo {
+                    elevation: *el,
+                    azimuth: *az,
+                    meas: v,
+                },
+            );
+        }
+        UbxGpsInfo {
+            timestamp: rxm.timestamp,
+            loc: nmea.loc,
+            msl: nmea.msl,
+            true_heading: nmea.true_heading,
+            mag_heading: nmea.mag_heading,
+            ground_speed: nmea.ground_speed,
+            quality: nmea.quality,
+            hdop: nmea.hdop,
+            vdop: nmea.vdop,
+            pdop: nmea.pdop,
+            meas,
+            receiver_status: rxm.receiver_status,
+        }
+    }
+
+    /// Get the timestamp of the message
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        self.timestamp
+    }
+
+    /// Get the location of the fix
+    /// 
+    /// Returns a tuple of (latitude in deg, longitude in deg, altitude in m)
+    pub fn location(&self) -> (f64, f64, f32) {
+        self.loc
+    }
+
+    /// Get the altitude above mean sea level (m)
+    pub fn msl(&self) -> f32 {
+        self.msl
+    }
+
+    /// Get the true heading (degrees)
+    pub fn true_heading(&self) -> f32 {
+        self.true_heading
+    }
+
+    /// Get the magnetic heading (degrees)
+    pub fn mag_heading(&self) -> f32 {
+        self.mag_heading
+    }
+
+    /// Get the ground speed (km/h)
+    pub fn ground_speed(&self) -> f32 {
+        self.ground_speed
+    }
+
+    /// Get the quality of the fix
+    pub fn quality(&self) -> u8 {
+        self.quality
+    }
+
+    /// Get the horizontal dilution of precision
+    pub fn hdop(&self) -> f32 {
+        self.hdop
+    }
+
+    /// Get the vertical dilution of precision
+    pub fn vdop(&self) -> f32 {
+        self.vdop
+    }
+
+    /// Get the position dilution of precision
+    pub fn pdop(&self) -> f32 {
+        self.pdop
+    }
+
+    /// Get the receiver status
+    pub fn receiver_status(&self) -> RecvStat {
+        self.receiver_status
+    }
+
+    /// Get the carrier phase measurements
+    pub fn carrier_phase(&self) -> &HashMap<GnssSatellite, SatPathInfo> {
+        &self.meas
+    }
 }
 
 mod test {

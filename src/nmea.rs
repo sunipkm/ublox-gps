@@ -21,6 +21,32 @@ pub enum GnssSatellite {
     Glonass(u8),
 }
 
+impl GnssSatellite {
+    pub fn from_nmea_svid(cls: &[u8; 2], svid: u8) -> Self {
+        match cls {
+            b"GP" => Self::Gps(svid),
+            b"GB" => Self::Beidou(svid),
+            b"GA" => Self::Galileo(svid),
+            b"GL" => Self::Glonass(svid - 64),
+            b"GN" => Self::Sbas(svid),
+            b"GQ" => Self::Qzss(svid),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn from_ubx(cls: u8, svid: u8) -> Self {
+        match cls {
+            0 => Self::Gps(svid),
+            1 => Self::Sbas(svid),
+            2 => Self::Galileo(svid),
+            3 => Self::Beidou(svid),
+            5 => Self::Qzss(svid),
+            6 => Self::Glonass(svid),
+            _ => unreachable!(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RawNmea {
     pub id: [u8; 2],
@@ -29,7 +55,7 @@ pub struct RawNmea {
 }
 
 impl RawNmea {
-    pub fn from_str(data: &str) -> HashMap<[u8; 3], Vec<RawNmea>> {
+    pub fn parse_str(data: &str) -> HashMap<[u8; 3], Vec<RawNmea>> {
         lazy_static! {
             static ref RE: Regex = Regex::new(
                 r"\$(?P<payload>(?P<id>[A-Z]{2})(?P<kind>[A-Z]{3})\,(?P<data>.*?))\*(?P<cksum>[A-F0-9]{2})"
@@ -69,17 +95,30 @@ impl RawNmea {
 }
 
 #[derive(Debug, Clone, Default)]
-struct GpsInfo {
-    time: DateTime<Utc>,
-    true_heading: (f32, f32),
-    mag_heading: (f32, f32),
-    ground_speed: f32,
-    lat: f64,
-    lon: f64,
-    quality: u8,
-    hdop: f32,
-    alt: f32,
-    sat_views: HashMap<GnssSatellite, (f32, f32)>,
+/// A struct containing GPS information
+pub struct NmeaGpsInfo {
+    /// Timestamp of the fix
+    pub time: DateTime<Utc>,
+    /// Location of the fix
+    pub loc: (f64, f64, f32),
+    /// Altitude above mean sea level
+    pub msl: f32,
+    /// True heading
+    pub true_heading: f32,
+    /// Magnetic heading
+    pub mag_heading: f32,
+    /// Ground speed
+    pub ground_speed: f32,
+    /// Quality of the fix
+    pub quality: u8,
+    /// Horizontal dilution of precision
+    pub hdop: f32,
+    /// Vertical dilution of precision
+    pub vdop: f32,
+    /// Position dilution of precision
+    pub pdop: f32,
+    /// Elevation and azimuth of satellites
+    pub sat_views: HashMap<GnssSatellite, (i8, u16)>,
 }
 
 #[derive(Error, Clone, Debug)]
@@ -92,56 +131,105 @@ pub enum GpsError {
     ParseError(String),
 }
 
-impl GpsInfo {
+impl NmeaGpsInfo {
     pub fn create(data: &HashMap<[u8; 3], Vec<RawNmea>>) -> Result<Self, GpsError> {
         if !data.contains_key(b"ZDA") || data[b"ZDA"].is_empty() {
             return Err(GpsError::NoFix);
         }
-        if !data.contains_key(b"GGA")|| data[b"GGA"].is_empty() {
+        if !data.contains_key(b"GGA") || data[b"GGA"].is_empty() {
             return Err(GpsError::PatternNotFound);
         }
         let time = parse_zda(&data[b"ZDA"][0].data)?;
         let gga = parse_gga(&data[b"GGA"][0].data)?;
         let mut info = Self {
             time,
-            lat: parse_lat(&gga["lat"])?,
-            lon: parse_lon(&gga["lon"])?,
-            quality: gga["quality"].parse().map_err(|_| GpsError::ParseError("Quality".into()))?,
-            hdop: gga["hdop"].parse().map_err(|_| GpsError::ParseError("HDOP".into()))?,
-            alt: gga["alt"].parse().map_err(|_| GpsError::ParseError("Altitude".into()))?,
+            loc: (
+                parse_lat(&gga["lat"], &gga["lat_dir"])?,
+                parse_lon(&gga["lon"], &gga["lon_dir"])?,
+                gga["alt"]
+                    .parse()
+                    .map_err(|_| GpsError::ParseError("Altitude".into()))?,
+            ),
+            quality: u8::from_str_radix(&gga["quality"], 16)
+                .map_err(|_| GpsError::ParseError("Quality".into()))?,
+            msl: gga["msl"].parse().unwrap_or_default(),
             ..Default::default()
         };
-        if &gga["lat_dir"] == "S" {
-            info.lat = -info.lat;
+        if data.contains_key(b"VTG") && !data[b"VTG"].is_empty() {
+            if let Ok(vtg) = parse_vtg(&data[b"VTG"][0].data) {
+                info.true_heading = vtg["true_heading"].parse().unwrap_or_default();
+                info.ground_speed = vtg["ground_speed"].parse().unwrap_or_default();
+                info.mag_heading = vtg["mag_heading"].parse().unwrap_or_default();
+            }
         }
-        if &gga["lon_dir"] == "W" {
-            info.lon = -info.lon;
+        if data.contains_key(b"GSA") && !data[b"GSA"].is_empty() {
+            if let Ok(gsa) = parse_gsa(&data[b"GSA"][0].data) {
+                info.pdop = gsa["pdop"].parse().unwrap_or_default();
+                info.hdop = gsa["hdop"].parse().unwrap_or_default();
+                info.vdop = gsa["vdop"].parse().unwrap_or_default();
+            }
+        }
+        if data.contains_key(b"GSV") {
+            data[b"GSV"]
+                .iter()
+                .filter_map(|x| {
+                    let id = x.id;
+                    parse_gsv(&x.data).ok().map(|x| {
+                        let xid = id;
+                        x.into_iter().map(move |(svid, elev, az)| {
+                            let cls = xid;
+                            (GnssSatellite::from_nmea_svid(&cls, svid), (elev, az))
+                        })
+                    })
+                })
+                .flatten()
+                .for_each(|(svid, (elev, az))| {
+                    info.sat_views
+                        .entry(svid)
+                        .and_modify(|e| {
+                            e.0 = elev;
+                            e.1 = az;
+                        })
+                        .or_insert((elev, az));
+                });
         }
         Ok(info)
     }
 }
 
-fn parse_lat(inp: &str) -> Result<f64, GpsError> {
+fn parse_lat(inp: &str, dir: &str) -> Result<f64, GpsError> {
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"(?<deg>\d{2})(?<min>\d{2}\.\d{5})").expect("Failed to compile regex");
+        static ref RE: Regex =
+            Regex::new(r"(?<deg>\d{2})(?<min>\d{2}\.\d{5})").expect("Failed to compile regex");
     }
     if let Some(inp) = RE.captures(inp) {
-        let deg = inp["deg"].parse::<f64>().map_err(|_| GpsError::ParseError("Latitude degrees".into()))?;
-        let min = inp["min"].parse::<f64>().map_err(|_| GpsError::ParseError("Latitude minutes".into()))?;
-        Ok(deg + min / 60.0)
+        let deg = inp["deg"]
+            .parse::<f64>()
+            .map_err(|_| GpsError::ParseError("Latitude degrees".into()))?;
+        let min = inp["min"]
+            .parse::<f64>()
+            .map_err(|_| GpsError::ParseError("Latitude minutes".into()))?;
+        let lat = deg + min / 60.0;
+        Ok(if dir == "S" { -lat } else { lat })
     } else {
         Err(GpsError::PatternNotFound)
     }
 }
 
-fn parse_lon(inp: &str) -> Result<f64, GpsError> {
+fn parse_lon(inp: &str, dir: &str) -> Result<f64, GpsError> {
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"(?<deg>\d{3})(?<min>\d{2}\.\d{5})").expect("Failed to compile regex");
+        static ref RE: Regex =
+            Regex::new(r"(?<deg>\d{3})(?<min>\d{2}\.\d{5})").expect("Failed to compile regex");
     }
     if let Some(inp) = RE.captures(inp) {
-        let deg = inp["deg"].parse::<f64>().map_err(|_| GpsError::ParseError("Longitude degrees".into()))?;
-        let min = inp["min"].parse::<f64>().map_err(|_| GpsError::ParseError("Longitude minutes".into()))?;
-        Ok(deg + min / 60.0)
+        let deg = inp["deg"]
+            .parse::<f64>()
+            .map_err(|_| GpsError::ParseError("Longitude degrees".into()))?;
+        let min = inp["min"]
+            .parse::<f64>()
+            .map_err(|_| GpsError::ParseError("Longitude minutes".into()))?;
+        let lon = deg + min / 60.0;
+        Ok(if dir == "W" { -lon } else { lon })
     } else {
         Err(GpsError::PatternNotFound)
     }
@@ -172,26 +260,64 @@ fn parse_zda(inp: &str) -> Result<DateTime<Utc>, GpsError> {
 fn parse_gga(inp: &str) -> Result<Captures, GpsError> {
     lazy_static! {
         static ref RE: Regex = Regex::new(
-            r"\d{6}\.\d{2},(?<lat>[\d\.]*),(?<lat_dir>[NS]),(?<lon>[\d\.]*),(?<lon_dir>[EW]),(?<quality>\d),(?<sat_views>\d*),(?<hdop>[\d\.]*),(?<alt>\d+\.\d),(?<alt_units>[M]),"
+            r"\d{6}\.\d{2},(?<lat>[\d\.]*),(?<lat_dir>[NS]),(?<lon>[\d\.]*),(?<lon_dir>[EW]),(?<quality>[0-9A-F]),(?<sat_views>\d*),[\d\.]*,(?<alt>[\-\d\.]*),M,(?<msl>[\-\d\.]*),M,(?<sep>[\-\d\.]*),"
         ).expect("Failed to compile regex");
     }
     RE.captures(inp).ok_or(GpsError::PatternNotFound)
 }
 
+fn parse_vtg(inp: &str) -> Result<Captures, GpsError> {
+    lazy_static! {
+        static ref RE: Regex = Regex::new(
+            r"(?<true_heading>[\-\d\.]*),T,(?<mag_heading>[\-\d\.]*),M,[\d\.]*,N,(?<ground_speed>[\d\.]*),K,"
+        ).expect("Failed to compile regex");
+    }
+    RE.captures(inp).ok_or(GpsError::PatternNotFound)
+}
+
+fn parse_gsa(inp: &str) -> Result<Captures, GpsError> {
+    lazy_static! {
+        static ref RE: Regex = Regex::new(
+            r"[AM],\d,\d*,\d*,\d*,\d*,\d*,\d*,\d*,\d*,\d*,\d*,\d*,\d*,(?<pdop>[\d\.]*),(?<hdop>[\d\.]*),(?<vdop>[\d\.]*),"
+        ).expect("Failed to compile regex");
+    }
+    RE.captures(inp).ok_or(GpsError::PatternNotFound)
+}
+
+fn parse_gsv(inp: &str) -> Result<Vec<(u8, i8, u16)>, GpsError> {
+    lazy_static! {
+        static ref RE: Regex = Regex::new(r"\d*,\d*,\d*,(?<payload>[\d\,]*)[0-9A-F]")
+            .expect("Failed to compile regex");
+        static ref XTRACT: Regex =
+            Regex::new(r"(?<svid>\d*),(?<elevation>\d*),(?<azimuth>\d*),(?<snr>\d*),")
+                .expect("Failed to compile regex");
+    }
+    let cap = RE.captures(inp).ok_or(GpsError::PatternNotFound)?;
+    Ok(XTRACT
+        .captures_iter(&cap["payload"])
+        .map(|x| {
+            (
+                x["svid"].parse::<u8>().unwrap_or_default(),
+                x["elevation"].parse::<i8>().unwrap_or_default(),
+                x["azimuth"].parse::<u16>().unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>())
+}
+
 mod test {
-    use regex::Regex;
 
     #[test]
     fn parse_test() {
         let payload =
             "22:15:15  $GNRMC,221515.00,A,4238.96342,N,07118.97943,W,0.046,,031024,,,D,V*0D
-22:15:15  $GNVTG,,T,,M,0.046,N,0.086,K,D*34
-22:15:15  $GNGGA,221515.00,4238.96342,N,07118.97943,W,2,12,1.04,36.7,M,-33.0,M,,0131*41
-22:15:15  $GNGSA,A,3,03,27,46,44,31,26,04,16,,,,,1.83,1.04,1.51,1*0A
-22:15:15  $GNGSA,A,3,68,78,79,67,,,,,,,,,1.83,1.04,1.51,2*06
-22:15:15  $GNGSA,A,3,21,29,19,,,,,,,,,,1.83,1.04,1.51,3*09
-22:15:15  $GNGSA,A,3,25,23,41,32,,,,,,,,,1.83,1.04,1.51,4*0C
-22:15:15  $GNGSA,A,3,,,,,,,,,,,,,1.83,1.04,1.51,5*0F
+22:15:15  done $GNVTG,,T,,M,0.046,N,0.086,K,D*34
+22:15:15  done $GNGGA,221515.00,4238.96342,N,07118.97943,W,2,12,1.04,36.7,M,-33.0,M,,0131*41
+22:15:15  done $GNGSA,A,3,03,27,46,44,31,26,04,16,,,,,1.83,1.04,1.51,1*0A
+22:15:15  done $GNGSA,A,3,68,78,79,67,,,,,,,,,1.83,1.04,1.51,2*06
+22:15:15  done $GNGSA,A,3,21,29,19,,,,,,,,,,1.83,1.04,1.51,3*09
+22:15:15  done $GNGSA,A,3,25,23,41,32,,,,,,,,,1.83,1.04,1.51,4*0C
+22:15:15  done $GNGSA,A,3,,,,,,,,,,,,,1.83,1.04,1.51,5*0F
 22:15:15  $GPGSV,3,1,10,03,26,248,42,04,48,306,17,16,68,221,41,26,72,052,18,1*61
 22:15:15  $GPGSV,3,2,10,27,18,171,36,29,16,041,11,31,62,067,22,32,00,145,12,1*66
 22:15:15  $GPGSV,3,3,10,44,23,237,44,46,15,247,33,1*65
@@ -212,14 +338,27 @@ mod test {
 22:15:15  $GQGSV,1,1,00,0*64
 22:15:15  $GNGLL,4238.96342,N,07118.97943,W,221515.00,A,D*68
 22:15:15  $GNZDA,221515.00,03,10,2024,00,00*7E";
-        let nmea = super::RawNmea::from_str(payload);
+        let nmea = super::RawNmea::parse_str(payload);
         // println!("{:#?}", nmea);
-        nmea[b"GGA"]
-            .iter()
-            .for_each(|x| println!("{:?}", super::parse_gga(&x.data)));
-        nmea[b"ZDA"]
-            .iter()
-            .for_each(|x| println!("{:?}", super::parse_zda(&x.data)));
-        println!("{:?}", super::GpsInfo::create(&nmea));
+        // nmea[b"GGA"]
+        //     .iter()
+        //     .for_each(|x| println!("{:?}", super::parse_gga(&x.data)));
+        // nmea[b"ZDA"]
+        //     .iter()
+        //     .for_each(|x| println!("{:?}", super::parse_zda(&x.data)));
+        // nmea[b"VTG"]
+        //     .iter()
+        //     .for_each(|x| println!("{:?}", super::parse_vtg(&x.data)));
+        // nmea[b"GSA"]
+        //     .iter()
+        //     .for_each(|x| println!("{:?}", super::parse_gsa(&x.data)));
+        // nmea[b"GSV"].iter().for_each(|x| {
+        //     println!(
+        //         "{}: {:?}",
+        //         str::from_utf8(&x.id).unwrap_or(""),
+        //         super::parse_gsv(&x.data)
+        //     )
+        // });
+        println!("{:?}", super::NmeaGpsInfo::create(&nmea));
     }
 }
