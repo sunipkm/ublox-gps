@@ -7,6 +7,7 @@ use std::{collections::HashMap, time::Duration};
 
 use bitfield_struct::bitfield;
 use chrono::{DateTime, TimeDelta, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::nmea::{GnssSatellite, NmeaGpsInfo};
 
@@ -86,7 +87,7 @@ pub trait UbxFormat {
         Self: Sized;
 }
 
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Serialize, Deserialize)]
 /// A GNSS frequency channel
 pub enum GnssFreq {
     /// GPS frequency channel
@@ -120,7 +121,7 @@ fn parse_sat_ids(
     Ok((sat, freq))
 }
 
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Serialize, Deserialize)]
 /// GPS frequency channels
 pub enum GpsFreq {
     /// GPS L1 C/A frequency
@@ -150,7 +151,7 @@ impl TryFrom<u8> for GpsFreq {
     }
 }
 
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Serialize, Deserialize)]
 /// Galileo frequency channels
 pub enum GalileoFreq {
     /// Galileo E1C frequency
@@ -183,7 +184,7 @@ impl TryFrom<u8> for GalileoFreq {
     }
 }
 
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Serialize, Deserialize)]
 #[allow(non_camel_case_types)]
 /// Beidou frequency channels
 pub enum BeidouFreq {
@@ -217,7 +218,7 @@ impl TryFrom<u8> for BeidouFreq {
     }
 }
 
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Serialize, Deserialize)]
 /// Glonass frequency channels
 pub enum GlonassFreq {
     /// Glonass L1OF frequency (Channel: -7 to 6)
@@ -245,7 +246,7 @@ impl TryFrom<(u8, i8)> for GlonassFreq {
     }
 }
 
-#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Serialize, Deserialize)]
 /// QZSS frequency channels
 pub enum QzssFreq {
     /// QZSS L1CA frequency
@@ -282,7 +283,7 @@ pub struct UbxRxmRawx {
     pub meas: HashMap<GnssSatellite, Vec<CarrierMeas>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Carrier phase and Doppler measurements
 pub struct CarrierMeas {
     /// GNSS satellite and frequency channel
@@ -304,6 +305,7 @@ pub struct CarrierMeas {
 }
 
 #[bitfield(u8)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 /// Tracking status and phase lock flags for carrier phase and pseudo-range measurements
 pub struct TrkStat {
     #[bits(1)]
@@ -323,6 +325,7 @@ pub struct TrkStat {
 }
 
 #[bitfield(u8)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 /// Receiver status flags
 pub struct RecvStat {
     #[bits(1)]
@@ -559,7 +562,7 @@ fn rxm_checksum(buf: &[u8]) -> (u8, u8) {
     (ck_a, ck_b)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// U-Blox Satellite Carrier Phase Measurements
 pub struct SatPathInfo {
     /// Satellite elevation angle (degrees)
@@ -571,7 +574,7 @@ pub struct SatPathInfo {
 }
 
 /// U-Blox Combined GPS info and Carrier Phase
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UbxGpsInfo {
     /// Timestamp of the message
     pub timestamp: DateTime<Utc>,
@@ -596,26 +599,30 @@ pub struct UbxGpsInfo {
     /// Position and carrier phase measurements
     meas: HashMap<GnssSatellite, SatPathInfo>,
     /// Receiver status
-    receiver_status: RecvStat,
+    receiver_status: Option<RecvStat>,
 }
 
 impl UbxGpsInfo {
     /// Create a new UBX GPS info struct
-    pub fn new(nmea: NmeaGpsInfo, rxm: UbxRxmRawx) -> Self {
+    pub fn new(nmea: NmeaGpsInfo, rxm: Option<UbxRxmRawx>) -> Self {
         let mut meas = HashMap::new();
-        for (sat, v) in rxm.meas {
-            let (el, az) = nmea.sat_views.get(&sat).unwrap_or(&(-1, 0));
-            meas.insert(
-                sat,
-                SatPathInfo {
-                    elevation: *el,
-                    azimuth: *az,
-                    meas: v,
-                },
-            );
+        let mut recv_stat = None;
+        if let Some(rxm) = rxm {
+            for (sat, v) in rxm.meas {
+                let (el, az) = nmea.sat_views.get(&sat).unwrap_or(&(-1, 0));
+                meas.insert(
+                    sat,
+                    SatPathInfo {
+                        elevation: *el,
+                        azimuth: *az,
+                        meas: v,
+                    },
+                );
+            };
+            recv_stat = Some(rxm.receiver_status);
         }
         UbxGpsInfo {
-            timestamp: rxm.timestamp,
+            timestamp: nmea.time,
             loc: nmea.loc,
             msl: nmea.msl,
             true_heading: nmea.true_heading,
@@ -626,7 +633,7 @@ impl UbxGpsInfo {
             vdop: nmea.vdop,
             pdop: nmea.pdop,
             meas,
-            receiver_status: rxm.receiver_status,
+            receiver_status: recv_stat,
         }
     }
 
@@ -683,13 +690,18 @@ impl UbxGpsInfo {
     }
 
     /// Get the receiver status
-    pub fn receiver_status(&self) -> RecvStat {
+    pub fn receiver_status(&self) -> Option<RecvStat> {
         self.receiver_status
     }
 
     /// Get the carrier phase measurements
     pub fn carrier_phase(&self) -> &HashMap<GnssSatellite, SatPathInfo> {
         &self.meas
+    }
+
+    /// Remove the carrier phase measurements
+    pub fn remove_carrier_phase(&mut self) -> HashMap<GnssSatellite, SatPathInfo> {
+        self.meas.drain().collect()
     }
 }
 

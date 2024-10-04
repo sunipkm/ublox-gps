@@ -1,6 +1,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use lazy_static::lazy_static;
 use regex::{Captures, Regex};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -21,8 +22,34 @@ pub enum GnssSatellite {
     Glonass(u8),
 }
 
+impl Serialize for GnssSatellite {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        match self {
+            Self::Gps(svid) => serializer.serialize_str(&format!("GP{:02X}", svid)),
+            Self::Sbas(svid) => serializer.serialize_str(&format!("GN{:02X}", svid)),
+            Self::Galileo(svid) => serializer.serialize_str(&format!("GA{:02X}", svid)),
+            Self::Beidou(svid) => serializer.serialize_str(&format!("GB{:02X}", svid)),
+            Self::Qzss(svid) => serializer.serialize_str(&format!("GQ{:02X}", svid)),
+            Self::Glonass(svid) => serializer.serialize_str(&format!("GL{:02X}", svid)),
+        }
+    }
+}
+
+impl<'de> Deserialize <'de> for GnssSatellite {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de> {
+        let s = String::deserialize(deserializer)?;
+        let cls = s[..2].as_bytes();
+        let svid = u8::from_str_radix(&s[2..], 16).unwrap_or_default();
+        Ok(GnssSatellite::from_nmea_svid(cls, svid))
+    }
+}
+
 impl GnssSatellite {
-    pub fn from_nmea_svid(cls: &[u8; 2], svid: u8) -> Self {
+    pub fn from_nmea_svid(cls: &[u8], svid: u8) -> Self {
         match cls {
             b"GP" => Self::Gps(svid),
             b"GB" => Self::Beidou(svid),
@@ -242,13 +269,11 @@ fn parse_zda(inp: &str) -> Result<DateTime<Utc>, GpsError> {
         )
         .expect("Failed to compile regex");
     }
-    println!("Input: {}", inp);
     if let Some(inp) = RE.captures(inp) {
         let inp = format!(
             "{}-{}-{}T{}:{}:{}0",
             &inp["year"], &inp["month"], &inp["day"], &inp["hour"], &inp["minute"], &inp["second"]
         );
-        println!("{}", inp);
         #[allow(deprecated)]
         TimeZone::datetime_from_str(&Utc, &inp, "%Y-%m-%dT%H:%M:%S%.f")
             .map_err(|e| GpsError::ParseError(e.to_string()))
