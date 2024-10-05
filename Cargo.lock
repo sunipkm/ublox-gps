@@ -470,6 +470,7 @@ dependencies = [
  "dimensioned",
  "lazy_static",
  "nmea-parser",
+ "num-traits",
  "regex",
  "serde",
  "serialport",

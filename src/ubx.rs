@@ -1,6 +1,6 @@
 #![deny(missing_docs)]
 //! # UBX Parser
-//! 
+//!
 //! This crate provides a parser for UBX messages from a serial port.
 
 use std::{collections::HashMap, time::Duration};
@@ -97,9 +97,21 @@ pub enum GnssFreq {
     /// Beidou frequency channel
     Beidou(BeidouFreq),
     /// Glonass frequency channel
-    Glonass(GlonassFreq, i8),
+    Glonass(GlonassFreq),
     /// QZSS frequency channel
     Qzss(QzssFreq),
+}
+
+impl Frequency for GnssFreq {
+    fn get_freq(&self) -> f64 {
+        match self {
+            GnssFreq::Gps(freq) => freq.get_freq(),
+            GnssFreq::Galileo(freq) => freq.get_freq(),
+            GnssFreq::Beidou(freq) => freq.get_freq(),
+            GnssFreq::Glonass(freq) => freq.get_freq(),
+            GnssFreq::Qzss(freq) => freq.get_freq(),
+        }
+    }
 }
 
 fn parse_sat_ids(
@@ -151,6 +163,16 @@ impl TryFrom<u8> for GpsFreq {
     }
 }
 
+impl Frequency for GpsFreq {
+    fn get_freq(&self) -> f64 {
+        use GpsFreq::*;
+        match self {
+            L1CA => 1575.42e6,
+            L2CL | L2CM => 1227.60e6,
+        }
+    }
+}
+
 #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Serialize, Deserialize)]
 /// Galileo frequency channels
 pub enum GalileoFreq {
@@ -184,6 +206,16 @@ impl TryFrom<u8> for GalileoFreq {
     }
 }
 
+impl Frequency for GalileoFreq {
+    fn get_freq(&self) -> f64 {
+        use GalileoFreq::*;
+        match self {
+            E1C | E1B => 1575.42e6,
+            E5bl | E5bQ => 1207.14e6,
+        }
+    }
+}
+
 #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Serialize, Deserialize)]
 #[allow(non_camel_case_types)]
 /// Beidou frequency channels
@@ -196,6 +228,16 @@ pub enum BeidouFreq {
     B2I_D1,
     /// Beidou B2I D2 frequency
     B2I_D2,
+}
+
+impl Frequency for BeidouFreq {
+    fn get_freq(&self) -> f64 {
+        use BeidouFreq::*;
+        match self {
+            B1I_D1 | B1I_D2 => 1561.098e6,
+            B2I_D1 | B2I_D2 => 1207.14e6,
+        }
+    }
 }
 
 impl From<BeidouFreq> for GnssFreq {
@@ -229,7 +271,7 @@ pub enum GlonassFreq {
 
 impl From<GlonassFreq> for GnssFreq {
     fn from(val: GlonassFreq) -> Self {
-        GnssFreq::Glonass(val, 0)
+        GnssFreq::Glonass(val)
     }
 }
 
@@ -242,6 +284,16 @@ impl TryFrom<(u8, i8)> for GlonassFreq {
             0 => Ok(GlonassFreq::L1OF(channel)),
             2 => Ok(GlonassFreq::L2OF(channel)),
             _ => Err("Invalid Glonass frequency ID"),
+        }
+    }
+}
+
+impl Frequency for GlonassFreq {
+    fn get_freq(&self) -> f64 {
+        use GlonassFreq::*;
+        match self {
+            L1OF(k) => 1602.0e6 + 562.5e3 * (*k as f64),
+            L2OF(k) => 1246.0e6 + 437.5e3 * (*k as f64),
         }
     }
 }
@@ -259,6 +311,12 @@ impl From<QzssFreq> for GnssFreq {
     }
 }
 
+impl Frequency for QzssFreq {
+    fn get_freq(&self) -> f64 {
+        1575.42e6
+    }
+}
+
 impl TryFrom<u8> for QzssFreq {
     type Error = &'static str;
 
@@ -268,6 +326,12 @@ impl TryFrom<u8> for QzssFreq {
             _ => Err("Invalid QZSS frequency ID"),
         }
     }
+}
+
+/// Get the channel frequency
+pub(crate) trait Frequency {
+    /// Get the frequency associated with the GPS channel
+    fn get_freq(&self) -> f64;
 }
 
 #[derive(Debug, Clone)]
@@ -296,8 +360,8 @@ pub struct CarrierMeas {
     ///
     /// # Note: Positive Doppler indicates satellite moving towards the receiver
     pub doppler: (f32, f32),
-    /// Carrier phase locktime counter (max. 64500 ms)
-    pub locktime: Duration,
+    /// Carrier phase locktime counter (ms, max. 64500 ms)
+    pub locktime: u16,
     /// Carrier-to-noise ratio (dB-Hz)
     pub carrier_snr: u8,
     /// Tracking status and phase lock flags
@@ -429,11 +493,11 @@ impl UbxFormat for UbxRxmRawx {
                     0.002f32 * ((2i32.pow(message.payload[start + 29].into())) as f32);
                 (doppler, doppler_std)
             };
-            let locktime = Duration::from_millis(u16::from_le_bytes(
+            let locktime = u16::from_le_bytes(
                 message.payload[start + 24..start + 26]
                     .try_into()
                     .map_err(|_| "Failed to convert bytes to locktime")?,
-            ) as u64);
+            );
             let mes = {
                 CarrierMeas {
                     channel: freq,
@@ -449,6 +513,15 @@ impl UbxFormat for UbxRxmRawx {
                 .entry(sat)
                 .and_modify(|e| e.push(mes.clone()))
                 .or_insert(vec![mes]);
+            for (_, v) in msg.meas.iter_mut() {
+                v.sort_by(|a, b| {
+                    a.channel
+                        .get_freq()
+                        .partial_cmp(&b.channel.get_freq())
+                        .expect("Failed to compare frequencies?")
+                });
+                v.reverse();
+            }
         }
         Ok(msg)
     }
@@ -464,7 +537,7 @@ pub struct UbxMessage {
     pub payload: Vec<u8>,
 }
 
-/// Remove UBX message bytes from buffer, 
+/// Remove UBX message bytes from buffer,
 /// parse and return UBX messages, and return the remaining bytes
 pub fn split_ubx(mut buf: Vec<u8>) -> (Vec<UbxMessage>, Vec<u8>) {
     let mut messages = Vec::new();
@@ -473,11 +546,7 @@ pub fn split_ubx(mut buf: Vec<u8>) -> (Vec<UbxMessage>, Vec<u8>) {
         let mut payload = payload.split_off(6);
         let _ = payload.pop().unwrap();
         let _ = payload.pop().unwrap();
-        messages.push(UbxMessage {
-            class,
-            id,
-            payload,
-        });
+        messages.push(UbxMessage { class, id, payload });
     }
     (messages, buf)
 }
@@ -592,7 +661,7 @@ impl UbxGpsInfo {
                         meas: v,
                     },
                 );
-            };
+            }
             recv_stat = Some(rxm.receiver_status);
         }
         UbxGpsInfo {
@@ -617,7 +686,7 @@ impl UbxGpsInfo {
     }
 
     /// Get the location of the fix
-    /// 
+    ///
     /// Returns a tuple of (latitude in deg, longitude in deg, altitude in m)
     pub fn location(&self) -> (f64, f64, f32) {
         self.loc
@@ -676,6 +745,11 @@ impl UbxGpsInfo {
     /// Remove the carrier phase measurements
     pub fn remove_carrier_phase(&mut self) -> HashMap<GnssSatellite, SatPathInfo> {
         self.meas.drain().collect()
+    }
+
+    /// Calculate the total electron content (TEC) from the carrier phase measurements
+    pub fn calculate_tec(&self) {
+        todo!()
     }
 }
 

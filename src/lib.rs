@@ -7,10 +7,11 @@
 //! and satellite information.
 mod nmea;
 mod ubx;
+mod tec;
 
 pub use nmea::{GnssSatellite, GpsError, NmeaGpsInfo};
 pub use ubx::{
-    BeidouFreq, CarrierMeas, GalileoFreq, GlonassFreq, GnssFreq, GpsFreq, QzssFreq, UbxGpsInfo,
+    BeidouFreq, CarrierMeas, GalileoFreq, GlonassFreq, GnssFreq, GpsFreq, QzssFreq, UbxGpsInfo, SatPathInfo,
 };
 
 use nmea::RawNmea;
