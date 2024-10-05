@@ -39,7 +39,7 @@ fn main() {
         let ubxinfo = parse_messages(buf);
         match ubxinfo {
             Ok(ubxinfo) => {
-                let (mfcount, mfsats) = ubxinfo.carrier_phase().into_iter().fold((0, Vec::new()), |mut count, (sat, ch)| {
+                let (mfcount, mfsats) = ubxinfo.carrier_phase().iter().fold((0, Vec::new()), |mut count, (sat, ch)| {
                     if ch.meas.len() > 1 {
                         count.0 += 1;
                         count.1.push(sat);

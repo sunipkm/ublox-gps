@@ -28,12 +28,12 @@ impl Serialize for GnssSatellite {
         S: serde::Serializer,
     {
         match self {
-            Self::Gps(svid) => serializer.serialize_str(&format!("GP{:02X}", svid)),
-            Self::Sbas(svid) => serializer.serialize_str(&format!("GN{:02X}", svid)),
-            Self::Galileo(svid) => serializer.serialize_str(&format!("GA{:02X}", svid)),
-            Self::Beidou(svid) => serializer.serialize_str(&format!("GB{:02X}", svid)),
-            Self::Qzss(svid) => serializer.serialize_str(&format!("GQ{:02X}", svid)),
-            Self::Glonass(svid) => serializer.serialize_str(&format!("GL{:02X}", svid)),
+            Self::Gps(svid) => serializer.serialize_str(&format!("G{:02X}", svid)),
+            Self::Sbas(svid) => serializer.serialize_str(&format!("S{:02X}", svid)),
+            Self::Galileo(svid) => serializer.serialize_str(&format!("E{:02X}", svid)),
+            Self::Beidou(svid) => serializer.serialize_str(&format!("C{:02X}", svid)),
+            Self::Qzss(svid) => serializer.serialize_str(&format!("J{:02X}", svid)),
+            Self::Glonass(svid) => serializer.serialize_str(&format!("R{:02X}", svid)),
         }
     }
 }
@@ -44,9 +44,11 @@ impl<'de> Deserialize<'de> for GnssSatellite {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let cls = s[..2].as_bytes();
-        let svid = u8::from_str_radix(&s[2..], 16).unwrap_or_default();
-        Ok(GnssSatellite::from_nmea_svid(cls, svid))
+        if s.len() != 3 {
+            return Err(serde::de::Error::custom("Invalid length"));
+        }
+        let svid = u8::from_str_radix(&s[1..], 16).unwrap_or_default();
+        Ok(GnssSatellite::from_internal(s.as_bytes()[0], svid))
     }
 }
 
@@ -59,6 +61,18 @@ impl GnssSatellite {
             b"GL" => Self::Glonass(svid - 64),
             b"GN" => Self::Sbas(svid),
             b"GQ" => Self::Qzss(svid),
+            _ => unreachable!(),
+        }
+    }
+
+    pub(crate) fn from_internal(cls: u8, svid: u8) -> Self {
+        match cls {
+            b'G' => Self::Gps(svid),
+            b'C' => Self::Beidou(svid),
+            b'E' => Self::Galileo(svid),
+            b'R' => Self::Glonass(svid - 64),
+            b'S' => Self::Sbas(svid),
+            b'J' => Self::Qzss(svid),
             _ => unreachable!(),
         }
     }
