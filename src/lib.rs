@@ -6,16 +6,27 @@
 //! Provides a simple interface to extract timestamp, location, carrier phase
 //! and satellite information.
 mod nmea;
-mod ubx;
+mod read_until;
 mod tec;
+mod ubx;
+mod uncertain;
+
+use std::io::Read;
 
 pub use nmea::{GnssSatellite, GpsError, NmeaGpsInfo};
 pub use ubx::{
-    BeidouFreq, CarrierMeas, GalileoFreq, GlonassFreq, GnssFreq, GpsFreq, QzssFreq, UbxGpsInfo, SatPathInfo,
+    BeidouFreq, CarrierMeas, GalileoFreq, GlonassFreq, GnssFreq, GpsFreq, QzssFreq, SatPathInfo,
+    UbxGpsInfo,
 };
+
+pub use uncertain::Uncertain;
+pub use tec::{TecInfo, TecData};
 
 use nmea::RawNmea;
 use ubx::{split_ubx, UbxFormat, UbxRxmRawx};
+
+/// Default delimiter for separating UBX messages in a datafile
+pub const DEFAULT_DELIM: [u8; 8] = *b"\r\r\n\n\r\r\n\n";
 
 /// Parse a buffer to extract GPS positional information from NMEA messages only
 pub fn parse_nmea(buf: Vec<u8>) -> Result<NmeaGpsInfo, GpsError> {
@@ -44,4 +55,32 @@ pub fn parse_messages(buf: Vec<u8>) -> Result<UbxGpsInfo, GpsError> {
     Ok(gpsinfo)
 }
 
+/// Parse a datafile containing multiple UBX messages separated by a pattern
+pub fn parse_datafile<T: Read>(
+    reader: &mut T,
+    pattern: &[u8],
+) -> Result<Vec<UbxGpsInfo>, GpsError> {
+    let mut reader = read_until::get_reader(reader, pattern);
+    let mut buffers = Vec::new();
+    loop {
+        let mut buf = Vec::with_capacity(2048);
+        let n = reader
+            .read_to_end(&mut buf)
+            .map_err(|e| GpsError::ParseError(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        buffers.push(parse_messages(buf)?);
+    }
+    Ok(buffers)
+}
 
+mod test {
+    #[test]
+    fn test_parse() {
+        let mut datafile = std::fs::File::open("datafile.bin").unwrap();
+        let buffers = super::parse_datafile(&mut datafile, b"\r\r\n\n\r\r\n\n")
+            .expect("Failed to parse datafile");
+        println!("Length: {}", buffers.len());
+    }
+}

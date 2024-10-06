@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ublox_gps::parse_messages;
+use ublox_gps_tec::parse_messages;
 
 fn main() {
     let mut serial_port = serialport::new("/dev/ttyUSB0", 115200)
