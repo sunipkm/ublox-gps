@@ -1,0 +1,1 @@
+ATTRS{idVendor}=="1546", ATTRS{idProduct}=="0507", ACTION=="add", RUN+="/ublox_load.sh"
