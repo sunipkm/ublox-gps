@@ -1,4 +1,9 @@
-use std::{fmt::{self, Display, Formatter}, fs::File, io::Write, path::PathBuf};
+use std::{
+    fmt::{self, Display, Formatter},
+    fs::{File, OpenOptions},
+    io::Write,
+    path::PathBuf,
+};
 
 use chrono::{DateTime, Utc};
 use ublox_gps_tec::DEFAULT_DELIM;
@@ -60,8 +65,14 @@ impl StoreCfg {
             self.last_hour = None;
         }
         if self.last_hour.as_deref() != Some(&hour) {
-            let filename = self.current_dir.join(format!("{}{}0000.{}", &date, &hour, self.kind));
-            self.writer = Some(File::create(filename)?);
+            let filename = self
+                .current_dir
+                .join(format!("{}{}0000.{}", &date, &hour, self.kind));
+            if filename.exists() {
+                self.writer = Some(OpenOptions::new().append(true).open(filename)?);
+            } else {
+                self.writer = Some(File::create(filename)?);
+            }
             self.last_hour = Some(hour);
         }
         if let Some(writer) = &mut self.writer {
@@ -69,8 +80,10 @@ impl StoreCfg {
             writer.write_all(self.kind.delimiter())?;
             writer.flush()
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "No file writer"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "No file writer",
+            ))
         }
     }
 }
-
