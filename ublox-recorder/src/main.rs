@@ -59,11 +59,12 @@ fn main() {
                     println!(
                         "\n\n{:-<width$}",
                         format!(
-                            "{} ({:.3}, {:.3}, {:.3}) ",
+                            "{} ({:.3}, {:.3}, {:.3}) [{}]",
                             tec.timestamp().format("%Y-%m-%d %H:%M:%S%Z"),
                             tec.location().0,
                             tec.location().1,
-                            tec.location().2 * 1e-3
+                            tec.location().2 * 1e-3,
+                            tec.tec().len()
                         ),
                         width = width as usize
                     );
@@ -71,12 +72,12 @@ fn main() {
                     for tinfo in tec.tec() {
                         let meas = &info.carrier_phase()[&tinfo.source()]; // safe unwrap
                         let src = match tinfo.source() {
-                            GnssSatellite::Gps(prn) => format!("GPS-{:>2}", prn),
-                            GnssSatellite::Galileo(prn) => format!("GAL-{:>2}", prn),
-                            GnssSatellite::Beidou(prn) => format!("BEI-{:>2}", prn),
-                            GnssSatellite::Glonass(prn) => format!("GLO-{:>2}", prn),
-                            GnssSatellite::Qzss(prn) => format!("QZS-{:>2}", prn),
-                            GnssSatellite::Sbas(prn) => format!("SBA-{:>2}", prn),
+                            GnssSatellite::Gps(prn) => format!("GPS-{:02}", prn),
+                            GnssSatellite::Galileo(prn) => format!("GAL-{:02}", prn),
+                            GnssSatellite::Beidou(prn) => format!("BEI-{:02}", prn),
+                            GnssSatellite::Glonass(prn) => format!("GLO-{:02}", prn),
+                            GnssSatellite::Qzss(prn) => format!("QZS-{:02}", prn),
+                            GnssSatellite::Sbas(prn) => format!("SBA-{:02}", prn),
                         };
                         print!(
                             "\t{}: {:>3} AZ {:>2} EL | ",
