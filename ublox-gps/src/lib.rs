@@ -13,14 +13,15 @@ mod uncertain;
 
 use std::io::Read;
 
+use log::warn;
 pub use nmea::{GnssSatellite, GpsError, NmeaGpsInfo};
 pub use ubx::{
     BeidouFreq, CarrierMeas, GalileoFreq, GlonassFreq, GnssFreq, GpsFreq, QzssFreq, SatPathInfo,
     UbxGpsInfo,
 };
 
+pub use tec::{TecData, TecInfo};
 pub use uncertain::Uncertain;
-pub use tec::{TecInfo, TecData};
 
 use nmea::RawNmea;
 use ubx::{split_ubx, UbxFormat, UbxRxmRawx};
@@ -43,8 +44,11 @@ pub fn parse_messages(buf: Vec<u8>) -> Result<UbxGpsInfo, GpsError> {
     // 2. Parse UBX messages
     let mut rxm = Vec::new();
     for msg in ubx {
-        if let Ok(msg) = UbxRxmRawx::from_message(msg) {
-            rxm.push(msg);
+        match UbxRxmRawx::from_message(msg) {
+            Ok(msg) => {
+                rxm.push(msg);
+            }
+            Err(e) => warn!("Error parsing UBX message: {}", e),
         }
     }
     // 3. Parse NMEA messages

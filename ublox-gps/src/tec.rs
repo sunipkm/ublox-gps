@@ -98,7 +98,7 @@ impl TecInfo {
         }
 
         if tec.is_empty() {
-            return None;
+            None
         } else {
             tec.sort_by(|a, b| a.source.cmp(&b.source));
             Some(TecInfo {

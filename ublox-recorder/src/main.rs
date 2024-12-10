@@ -4,8 +4,12 @@ mod config;
 mod store;
 use chrono::Utc;
 use crossterm::terminal;
+use std::{
+    io::ErrorKind,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use ublox_gps_tec::{GnssFreq, GnssSatellite};
-use std::{io::ErrorKind, path::{Path, PathBuf}, time::Duration};
 
 pub use config::RecorderCfg;
 use serialport::SerialPort;
@@ -14,7 +18,9 @@ use store::{StoreCfg, StoreKind};
 fn main() {
     // Try to load the config file and open the serial port from the config file
     let save_dir = Path::new("./");
-    let mut ser = serialport::new("/dev/ttyUSB0", 115200).open().expect("Failed to open serial port");
+    let mut ser = serialport::new("/dev/ttyUSB0", 115200)
+        .open()
+        .expect("Failed to open serial port");
     // Set the timeout on the serial port
     ser.set_timeout(Duration::from_millis(100))
         .expect("Failed to set timeout");
@@ -86,14 +92,14 @@ fn main() {
                             tinfo.elevation()
                         );
                         if let Some(ptec) = tinfo.phase_tec() {
-                            print!("Phase: {:.3} +/- {:.3} | ", ptec.0, ptec.1);
+                            print!("φ: {:.3}±{:.3} | ", ptec.0, ptec.1);
                         } else {
-                            print!("Phase: N/A | ");
+                            print!("φ: N/A | ");
                         }
                         if let Some(rtec) = tinfo.range_tec() {
-                            print!("Range: {:.3} +/- {:.3} | ", rtec.0, rtec.1);
+                            print!("R: {:.3}±{:.3} | ", rtec.0, rtec.1);
                         } else {
-                            print!("Range: N/A | ");
+                            print!("R: N/A | ");
                         }
                         for m in &meas.meas {
                             use GnssFreq::*;
@@ -105,12 +111,12 @@ fn main() {
                                 Qzss(freq) => print!("{:?}: ", freq),
                             }
                             if let Some(prn) = m.pseudo_range {
-                                print!("PRN {:.3}±{:.3} km, ", prn.0*1e-3, prn.1*1e-3);
+                                print!("PRN {:.3}km, ", prn.0 * 1e-3);
                             } else {
                                 print!("PRN N/A, ");
                             }
                             if let Some(cp) = m.carrier_phase {
-                                print!("CP {:.3}±{:.3} kHz, ", cp.0*1e-3, cp.1*1e-3);
+                                print!("CP {:.3}MHz, ", cp.0 * 1e-6);
                             } else {
                                 print!("CP N/A, ");
                             }
@@ -119,7 +125,11 @@ fn main() {
                     }
                     println!("{:=<width$}", "", width = width as usize);
                 } else {
-                    eprintln!("Source did not contain information for TEC calculation");
+                    let now = Utc::now();
+                    eprintln!(
+                        "[{}] Source did not contain information for TEC calculation",
+                        now.format("%Y-%m-%d %H:%M:%S")
+                    );
                 }
             }
             Err(e) => eprintln!("Error parsing UBX messages: {}", e),

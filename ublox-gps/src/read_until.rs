@@ -7,10 +7,7 @@ pub struct ReadUntil<'a, R: ?Sized> {
     until: Vec<u8>,
 }
 
-pub fn get_reader<'a, R: Read + ?Sized>(
-    reader: &'a mut R,
-    until: &[u8],
-) -> ReadUntil<'a, R> {
+pub fn get_reader<'a, R: Read + ?Sized>(reader: &'a mut R, until: &[u8]) -> ReadUntil<'a, R> {
     ReadUntil {
         reader,
         buf: Vec::new(),

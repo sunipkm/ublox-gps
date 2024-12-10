@@ -180,7 +180,10 @@ pub enum GpsError {
 
 impl NmeaGpsInfo {
     /// Create a new GPS info struct from a hashmap of [`RawNmea`] data
-    pub(crate) fn create(data: &HashMap<[u8; 3], Vec<RawNmea>>, process_gsv: bool) -> Result<Self, GpsError> {
+    pub(crate) fn create(
+        data: &HashMap<[u8; 3], Vec<RawNmea>>,
+        process_gsv: bool,
+    ) -> Result<Self, GpsError> {
         if !data.contains_key(b"ZDA") || data[b"ZDA"].is_empty() {
             return Err(GpsError::NoFix);
         }

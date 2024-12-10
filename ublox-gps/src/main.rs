@@ -39,14 +39,25 @@ fn main() {
         let ubxinfo = parse_messages(buf);
         match ubxinfo {
             Ok(ubxinfo) => {
-                let (mfcount, mfsats) = ubxinfo.carrier_phase().iter().fold((0, Vec::new()), |mut count, (sat, ch)| {
-                    if ch.meas.len() > 1 {
-                        count.0 += 1;
-                        count.1.push(sat);
-                    }
-                    count
-                });
-                println!("Timestamp: {:?}, Location: {:?}, Multi-frequency: {}/{}, Satellites: {:?}", ubxinfo.timestamp(), ubxinfo.location(),  mfcount, ubxinfo.carrier_phase().len(), mfsats);
+                let (mfcount, mfsats) =
+                    ubxinfo
+                        .carrier_phase()
+                        .iter()
+                        .fold((0, Vec::new()), |mut count, (sat, ch)| {
+                            if ch.meas.len() > 1 {
+                                count.0 += 1;
+                                count.1.push(sat);
+                            }
+                            count
+                        });
+                println!(
+                    "Timestamp: {:?}, Location: {:?}, Multi-frequency: {}/{}, Satellites: {:?}",
+                    ubxinfo.timestamp(),
+                    ubxinfo.location(),
+                    mfcount,
+                    ubxinfo.carrier_phase().len(),
+                    mfsats
+                );
             }
             Err(e) => {
                 eprintln!("Error: {:?}", e);

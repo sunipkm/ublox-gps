@@ -686,6 +686,7 @@ dependencies = [
  "bitfield-struct",
  "chrono",
  "lazy_static",
+ "log",
  "num-traits",
  "regex",
  "serde",
