@@ -16,7 +16,7 @@ pub fn get_reader<'a, R: Read + ?Sized>(reader: &'a mut R, until: &[u8]) -> Read
     }
 }
 
-impl<'a, R: Read + ?Sized> Read for ReadUntil<'a, R> {
+impl<R: Read + ?Sized> Read for ReadUntil<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut read = 0;
         while read < buf.len() {

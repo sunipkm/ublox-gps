@@ -137,7 +137,7 @@ impl RawNmea {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 /// A struct containing GPS information
 pub struct NmeaGpsInfo {
     /// Timestamp of the fix

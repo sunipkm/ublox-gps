@@ -92,7 +92,6 @@ pub enum UbxRxm {
 }
 
 /// Convert UBX message to a specific UBX format
-
 pub trait UbxFormat {
     /// Convert UBX message to a specific UBX format
     fn from_message(message: UbxMessage) -> Result<Self, &'static str>
@@ -395,7 +394,7 @@ pub(crate) trait Frequency {
     fn get_freq(&self) -> f64;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// UBX RXM-RAWX message
 pub struct UbxRxmRawx {
     /// Timestamp of the message
@@ -617,7 +616,7 @@ pub struct UbxMessage {
 /// Remove UBX message bytes from buffer,
 /// parse and return UBX messages, and return the remaining bytes
 pub fn split_ubx(mut buf: Vec<u8>) -> (Vec<UbxMessage>, Vec<u8>) {
-    let mut messages = Vec::new();
+    let mut messages = Vec::with_capacity(1);
     while let Ok((start, end, class, id)) = find_rxm_raw(&buf) {
         let mut payload: Vec<u8> = buf.drain(start..end).collect();
         let mut payload = payload.split_off(6);

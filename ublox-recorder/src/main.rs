@@ -6,13 +6,12 @@ use chrono::Utc;
 use crossterm::terminal;
 use std::{
     io::ErrorKind,
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 use ublox_gps_tec::{GnssFreq, GnssSatellite};
 
 pub use config::RecorderCfg;
-use serialport::SerialPort;
 use store::{StoreCfg, StoreKind};
 
 fn main() {
