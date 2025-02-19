@@ -27,10 +27,12 @@ fn main() {
     let raw_dir = save_dir.join("raw");
     let mut raw_writer =
         StoreCfg::new(raw_dir, StoreKind::Raw).expect("Failed to create raw data directory");
+    raw_writer.set_compression(true);
     // Create the TEC data directory
     let tec_dir = save_dir.join("tec");
     let mut tec_writer =
         StoreCfg::new(tec_dir, StoreKind::Json).expect("Failed to create TEC data directory");
+    tec_writer.set_compression(true);
     {}
     loop {
         let systime = Utc::now();
