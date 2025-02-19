@@ -42,7 +42,7 @@ pub struct StoreCfg {
 }
 
 impl StoreCfg {
-    pub fn new(root_dir: PathBuf, kind: StoreKind) -> Result<Self, std::io::Error> {
+    pub fn new(root_dir: PathBuf, kind: StoreKind, compress: bool) -> Result<Self, std::io::Error> {
         std::fs::create_dir_all(&root_dir)?;
         Ok(Self {
             root_dir,
@@ -51,12 +51,8 @@ impl StoreCfg {
             last_date: None,
             last_hour: None,
             writer: None,
-            compress: false,
+            compress,
         })
-    }
-
-    pub fn set_compression(&mut self, comp: bool) {
-        self.compress = comp;
     }
     
     pub fn store(&mut self, tstamp: DateTime<Utc>, data: &[u8]) -> Result<(), std::io::Error> {
