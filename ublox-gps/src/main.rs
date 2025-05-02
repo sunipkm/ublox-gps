@@ -38,7 +38,7 @@ fn main() {
         println!("Time: {} s", (now - last).as_secs_f32());
         let ubxinfo = parse_messages(buf);
         match ubxinfo {
-            Ok(ubxinfo) => {
+            Ok((ubxinfo, _),) => {
                 let (mfcount, mfsats) =
                     ubxinfo
                         .carrier_phase()

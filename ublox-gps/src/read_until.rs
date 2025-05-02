@@ -63,6 +63,12 @@ impl<R: Read + ?Sized> Read for ReadUntil<'_, R> {
                 self.buf.extend_from_slice(&tmp[..n]);
                 self.read = 0;
             }
+            if self.read > self.buf.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "Read position exceeds buffer length",
+                ));
+            }
             let n = self.buf.len() - self.read;
             let end = self.read + n;
             let found = self.buf[self.read..end]

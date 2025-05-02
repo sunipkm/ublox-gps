@@ -49,7 +49,7 @@ fn main() {
             .expect("Failed to store raw data");
         let ubxinfo = ublox_gps_tec::parse_messages(buf);
         match ubxinfo {
-            Ok(info) => {
+            Ok((info, _)) => {
                 if let Some(tec) = ublox_gps_tec::TecInfo::assimilate(&info) {
                     tec_writer
                         .store(

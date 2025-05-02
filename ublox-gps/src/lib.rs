@@ -25,16 +25,24 @@ pub use tec::{TecData, TecInfo};
 pub use uncertain::Uncertain;
 
 use nmea::RawNmea;
-use ubx::{split_ubx, UbxFormat, UbxRxmRawx};
+use ubx::{split_ubx, UbxFormat, UbxMessage, UbxRxmRawx};
 
 /// Default delimiter for separating UBX messages in a datafile
 pub const DEFAULT_DELIM: [u8; 8] = *b"\r\r\n\n\r\r\n\n";
 
+/// A collection of NMEA messages, grouped by message type
+/// The key is the first three bytes of the message, e.g. "GGA", "GSA", etc.
+/// The value is a vector of RawNmea messages.
+/// The key is a 3-byte array, and the value is a vector of NMEA message strings.
+pub type NmeaMsgGroup = std::collections::HashMap<[u8; 3], Vec<RawNmea>>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// A GPS Packet, comprised of NMEA message and RXM carrier data
 pub struct GpsPacket {
-    /// NMEA data
+    /// Processed NMEA data
     pub nmea: NmeaGpsInfo,
+    /// Raw NMEA data
+    pub nmea_raw: NmeaMsgGroup,
     /// Raw RXM carrier data
     pub rxm: Option<UbxRxmRawx>,
 }
@@ -45,16 +53,25 @@ impl From<GpsPacket> for UbxGpsInfo {
     }
 }
 
-/// Parse a buffer to extract GPS positional information from NMEA messages only
-pub fn parse_nmea(buf: Vec<u8>) -> Result<NmeaGpsInfo, GpsError> {
+/// Parse a buffer to extract GPS positional information from NMEA messages only.
+///
+/// This function is used to parse NMEA messages from a buffer.
+///
+/// # Arguments
+/// - `buf` - A vector of bytes containing the NMEA messages.
+///
+/// # Returns
+/// - A tuple containing the parsed NMEA GPS information and a group of unprocessed NMEA messages.
+///
+pub fn parse_nmea(buf: Vec<u8>) -> Result<(NmeaGpsInfo, NmeaMsgGroup), GpsError> {
     let buf = std::str::from_utf8(&buf).map_err(|e| GpsError::ParseError(e.to_string()))?;
-    let gpsmsg = RawNmea::parse_str(buf);
-    let gpsmsg = NmeaGpsInfo::create(&gpsmsg, false)?;
-    Ok(gpsmsg)
+    let mut gpsmsg = RawNmea::parse_str(buf);
+    let nmea = NmeaGpsInfo::create(&mut gpsmsg, true)?;
+    Ok((nmea, gpsmsg))
 }
 
 /// Parse a buffer to extract GPS positional information and satellite carrier phase information.
-pub fn parse_messages(buf: Vec<u8>) -> Result<UbxGpsInfo, GpsError> {
+pub fn parse_messages(buf: Vec<u8>) -> Result<(UbxGpsInfo, NmeaMsgGroup), GpsError> {
     // 1. Separate into UBX and NMEA messages
     let (ubx, buf) = split_ubx(buf);
     // 2. Parse UBX messages
@@ -69,10 +86,10 @@ pub fn parse_messages(buf: Vec<u8>) -> Result<UbxGpsInfo, GpsError> {
     }
     // 3. Parse NMEA messages
     let buf = std::str::from_utf8(&buf).map_err(|e| GpsError::ParseError(e.to_string()))?;
-    let gpsmsg = RawNmea::parse_str(buf);
-    let gpsmsg = NmeaGpsInfo::create(&gpsmsg, true)?;
-    let gpsinfo = UbxGpsInfo::new(gpsmsg, rxm.pop());
-    Ok(gpsinfo)
+    let mut gpsmsg = RawNmea::parse_str(buf);
+    let nmea = NmeaGpsInfo::create(&mut gpsmsg, true)?;
+    let gpsinfo = UbxGpsInfo::new(nmea, rxm.pop());
+    Ok((gpsinfo, gpsmsg))
 }
 
 /// Parse a buffer into a GPS Packet
@@ -94,12 +111,27 @@ pub fn parse_binary(buf: Vec<u8>) -> Result<GpsPacket, GpsError> {
     }
     // 3. Parse NMEA messages
     let buf = std::str::from_utf8(&buf).map_err(|e| GpsError::ParseError(e.to_string()))?;
-    let gpsmsg = RawNmea::parse_str(buf);
-    let gpsmsg = NmeaGpsInfo::create(&gpsmsg, true)?;
+    let mut gpsmsg = RawNmea::parse_str(buf);
+    let nmea = NmeaGpsInfo::create(&mut gpsmsg, true)?;
     Ok(GpsPacket {
-        nmea: gpsmsg,
+        nmea,
+        nmea_raw: gpsmsg,
         rxm: rxm.pop(),
     })
+}
+
+/// Parse a buffer to extract NMEA messages and the binary UBX payload.
+pub fn parse_partial(
+    buf: Vec<u8>,
+    process_gsv: bool,
+) -> Result<(NmeaGpsInfo, NmeaMsgGroup, Option<UbxMessage>), GpsError> {
+    // 1. Separate into UBX and NMEA messages
+    let (mut ubx, buf) = split_ubx(buf);
+    // 2. Parse NMEA messages
+    let buf = std::str::from_utf8(&buf).map_err(|e| GpsError::ParseError(e.to_string()))?;
+    let mut gpsmsg = RawNmea::parse_str(buf);
+    let nmea = NmeaGpsInfo::create(&mut gpsmsg, process_gsv)?;
+    Ok((nmea, gpsmsg, ubx.pop()))
 }
 
 /// Parse a datafile containing multiple UBX messages separated by a pattern
@@ -111,13 +143,18 @@ pub fn parse_datafile<T: Read>(
     let mut buffers = Vec::new();
     loop {
         let mut buf = Vec::with_capacity(2048);
-        let n = reader
-            .read_to_end(&mut buf)
-            .map_err(|e| GpsError::ParseError(e.to_string()))?;
-        if n == 0 {
+        if let Ok(n) = reader.read_to_end(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            if let Ok((res, _)) = parse_messages(buf) {
+                buffers.push(res);
+            } else {
+                warn!("Error parsing datafile: {}", n);
+            }
+        } else {
             break;
         }
-        buffers.push(parse_messages(buf)?);
     }
     Ok(buffers)
 }
@@ -125,7 +162,8 @@ pub fn parse_datafile<T: Read>(
 mod test {
     #[test]
     fn test_parse() {
-        let mut datafile = std::fs::File::open("datafile.bin").unwrap();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/test/datafile.bin");
+        let mut datafile = std::fs::File::open(dir).unwrap();
         let buffers = super::parse_datafile(&mut datafile, b"\r\r\n\n\r\r\n\n")
             .expect("Failed to parse datafile");
         println!("Length: {}", buffers.len());

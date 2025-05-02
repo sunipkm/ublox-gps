@@ -604,6 +604,7 @@ impl UbxFormat for UbxRxmRawx {
 }
 
 /// UBX message
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UbxMessage {
     /// Message class
     pub class: u8,

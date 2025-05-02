@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
+use crate::NmeaMsgGroup;
+
 #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 /// A GNSS satellite
 pub enum GnssSatellite {
@@ -90,7 +92,7 @@ impl GnssSatellite {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// A struct containing raw NMEA data
 pub struct RawNmea {
     /// The 'Talker ID'
@@ -100,7 +102,7 @@ pub struct RawNmea {
 
 impl RawNmea {
     /// Parse a string of NMEA data into a hashmap of [`RawNmea`] data
-    pub fn parse_str(data: &str) -> HashMap<[u8; 3], Vec<RawNmea>> {
+    pub fn parse_str(data: &str) -> NmeaMsgGroup {
         lazy_static! {
             static ref RE: Regex = Regex::new(
                 r"\$(?P<payload>(?P<id>[A-Z]{2})(?P<kind>[A-Z]{3})\,(?P<data>.*?))\*(?P<cksum>[A-F0-9]{2})"
@@ -179,63 +181,151 @@ pub enum GpsError {
 }
 
 impl NmeaGpsInfo {
-    /// Create a new GPS info struct from a hashmap of [`RawNmea`] data
+    /// Create a new GPS info struct from a hashmap of [`RawNmea`] data.
+    /// 
+    /// # Arguments
+    /// - `data`: A mutable reference to a hashmap of [`RawNmea`] data
+    /// - `process_gsv`: A boolean indicating whether to process GSV data
+    ///
+    /// # Returns
+    /// - A result containing the GPS info struct or a [`GpsError`]
+    /// 
+    /// # Errors
+    /// - Returns a [`GpsError`] if the ZDA or GGA data is not found or if parsing fails
+    /// 
     pub(crate) fn create(
-        data: &HashMap<[u8; 3], Vec<RawNmea>>,
+        data: &mut NmeaMsgGroup,
         process_gsv: bool,
     ) -> Result<Self, GpsError> {
-        if !data.contains_key(b"ZDA") || data[b"ZDA"].is_empty() {
+        let time = if let Some(mut zda) = data.remove(b"ZDA") {
+            let time = loop {
+                if let Some(val) = zda.pop() {
+                    if let Ok(zda) = parse_zda(&val.data) {
+                        break Some(zda);
+                    }
+                } else {
+                    break None;
+                }
+            };
+            if let Some(time) = time {
+                time
+            } else {
+                return Err(GpsError::NoFix);
+            }
+        } else {
             return Err(GpsError::NoFix);
-        }
-        if !data.contains_key(b"GGA") || data[b"GGA"].is_empty() {
-            return Err(GpsError::PatternNotFound);
-        }
-        let time = parse_zda(&data[b"ZDA"][0].data)?;
-        let gga = parse_gga(&data[b"GGA"][0].data)?;
+        };
+
+        let (loc, quality, msl) = if let Some(mut zda) = data.remove(b"GGA") {
+            let time = loop {
+                if let Some(val) = zda.pop() {
+                    if let Ok(gga) = parse_gga(&val.data) {
+                        let loc = (
+                            parse_lat(&gga["lat"], &gga["lat_dir"])?,
+                            parse_lon(&gga["lon"], &gga["lon_dir"])?,
+                            gga["alt"]
+                                .parse::<f32>()
+                                .map_err(|_| GpsError::ParseError("Altitude".into()))?,
+                        );
+                        let quality = u8::from_str_radix(&gga["quality"], 16)
+                            .map_err(|_| GpsError::ParseError("Quality".into()))?;
+                        let msl = gga["msl"].parse::<f32>().unwrap_or_default();
+                        break Some((loc, quality, msl));
+                    }
+                } else {
+                    break None;
+                }
+            };
+            if let Some(time) = time {
+                time
+            } else {
+                return Err(GpsError::NoFix);
+            }
+        } else {
+            return Err(GpsError::NoFix);
+        };
+
         let mut info = Self {
             time,
-            loc: (
-                parse_lat(&gga["lat"], &gga["lat_dir"])?,
-                parse_lon(&gga["lon"], &gga["lon_dir"])?,
-                gga["alt"]
-                    .parse()
-                    .map_err(|_| GpsError::ParseError("Altitude".into()))?,
-            ),
-            quality: u8::from_str_radix(&gga["quality"], 16)
-                .map_err(|_| GpsError::ParseError("Quality".into()))?,
-            msl: gga["msl"].parse().unwrap_or_default(),
+            loc,
+            msl,
+            quality,
             ..Default::default()
         };
-        if data.contains_key(b"VTG") && !data[b"VTG"].is_empty() {
-            if let Ok(vtg) = parse_vtg(&data[b"VTG"][0].data) {
-                info.true_heading = vtg["true_heading"].parse().unwrap_or_default();
-                info.ground_speed = vtg["ground_speed"].parse().unwrap_or_default();
-                info.mag_heading = vtg["mag_heading"].parse().unwrap_or_default();
+
+        if let Some(mut vtg) = data.remove(b"VTG") {
+            if let Some(vtg) = vtg.pop() {
+                if let Ok(vtg) = parse_vtg(&vtg.data) {
+                    info.true_heading = vtg["true_heading"].parse().unwrap_or_default();
+                    info.ground_speed = vtg["ground_speed"].parse().unwrap_or_default();
+                    info.mag_heading = vtg["mag_heading"].parse().unwrap_or_default();
+                }
             }
         }
-        if data.contains_key(b"GSA") && !data[b"GSA"].is_empty() {
-            if let Ok(gsa) = parse_gsa(&data[b"GSA"][0].data) {
-                info.pdop = gsa["pdop"].parse().unwrap_or_default();
-                info.hdop = gsa["hdop"].parse().unwrap_or_default();
-                info.vdop = gsa["vdop"].parse().unwrap_or_default();
+
+        if let Some(mut gsa) = data.remove(b"GSA") {
+            if let Some(gsa) = gsa.pop() {
+                if let Ok(gsa) = parse_gsa(&gsa.data) {
+                    info.pdop = gsa["pdop"].parse().unwrap_or_default();
+                    info.hdop = gsa["hdop"].parse().unwrap_or_default();
+                    info.vdop = gsa["vdop"].parse().unwrap_or_default();
+                }
             }
         }
-        if process_gsv && data.contains_key(b"GSV") {
-            data[b"GSV"]
-                .iter()
+
+        if process_gsv {
+            if let Some(gsv) = data.remove(b"GSV") {
+                gsv.iter()
+                    .filter_map(|x| {
+                        let id = x.id;
+                        parse_gsv(&x.data).ok().map(|x| {
+                            x.into_iter().map(move |(svid, elev, az)| {
+                                (GnssSatellite::from_nmea_svid(&id, svid), (elev, az))
+                            })
+                        })
+                    })
+                    .flatten()
+                    .for_each(|(svid, (elev, az))| {
+                        info.sat_views
+                            .entry(svid)
+                            .and_modify(|e| {
+                                e.0 = elev;
+                                e.1 = az;
+                            })
+                            .or_insert((elev, az));
+                    });
+            }
+        }
+        Ok(info)
+    }
+
+    /// Insert GSV data into the GPS info struct.
+    /// 
+    /// # Note
+    /// [NmeaGpsInfo::insert_gsv] is intended to be used when NMEA
+    /// data is processed partially using the [crate::parse_partial]
+    /// function. It allows for the insertion of GSV data after
+    /// the initial parsing of time, location and heading data.
+    /// It is up to the user to ensure that the GSV data from the
+    /// correct packet is inserted.
+    ///
+    /// # Arguments
+    /// - `msgs`: A [`NmeaMsgGroup`] containing GSV data.
+    /// 
+    pub fn insert_gsv(&mut self, msgs: &mut NmeaMsgGroup) {
+        if let Some(gsv) = msgs.remove(b"GSV") {
+            gsv.iter()
                 .filter_map(|x| {
                     let id = x.id;
                     parse_gsv(&x.data).ok().map(|x| {
-                        let xid = id;
                         x.into_iter().map(move |(svid, elev, az)| {
-                            let cls = xid;
-                            (GnssSatellite::from_nmea_svid(&cls, svid), (elev, az))
+                            (GnssSatellite::from_nmea_svid(&id, svid), (elev, az))
                         })
                     })
                 })
                 .flatten()
                 .for_each(|(svid, (elev, az))| {
-                    info.sat_views
+                    self.sat_views
                         .entry(svid)
                         .and_modify(|e| {
                             e.0 = elev;
@@ -244,7 +334,6 @@ impl NmeaGpsInfo {
                         .or_insert((elev, az));
                 });
         }
-        Ok(info)
     }
 }
 
@@ -387,7 +476,7 @@ mod test {
 22:15:15  $GQGSV,1,1,00,0*64
 22:15:15  $GNGLL,4238.96342,N,07118.97943,W,221515.00,A,D*68
 22:15:15  $GNZDA,221515.00,03,10,2024,00,00*7E";
-        let nmea = super::RawNmea::parse_str(payload);
+        let mut nmea = super::RawNmea::parse_str(payload);
         // println!("{:#?}", nmea);
         // nmea[b"GGA"]
         //     .iter()
@@ -408,6 +497,7 @@ mod test {
         //         super::parse_gsv(&x.data)
         //     )
         // });
-        println!("{:?}", super::NmeaGpsInfo::create(&nmea, true));
+        println!("{:?}", super::NmeaGpsInfo::create(&mut nmea, false));
+        println!("{:?}", nmea);
     }
 }
