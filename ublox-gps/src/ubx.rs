@@ -13,7 +13,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use log::warn;
 use serde::{Deserialize, Serialize};
 
-use crate::nmea::{GnssSatellite, NmeaGpsInfo};
+use crate::{nmea::{GnssSatellite, NmeaGpsInfo}, NmeaMsgGroup};
 
 const GPS_EPOCH: DateTime<Utc> = DateTime::from_timestamp_nanos(315_964_800_000_000_000);
 
@@ -721,11 +721,13 @@ pub struct UbxGpsInfo {
     meas: HashMap<GnssSatellite, SatPathInfo>,
     /// Receiver status
     receiver_status: Option<RecvStat>,
+    /// Raw NMEA messages
+    nmea_raw: NmeaMsgGroup,
 }
 
 impl UbxGpsInfo {
     /// Create a new UBX GPS info struct
-    pub fn new(nmea: NmeaGpsInfo, rxm: Option<UbxRxmRawx>) -> Self {
+    pub fn new(nmea: NmeaGpsInfo, rxm: Option<UbxRxmRawx>, nmea_raw: NmeaMsgGroup) -> Self {
         let mut meas = HashMap::new();
         let mut recv_stat = None;
         if let Some(rxm) = rxm {
@@ -755,6 +757,7 @@ impl UbxGpsInfo {
             pdop: nmea.pdop,
             meas,
             receiver_status: recv_stat,
+            nmea_raw,
         }
     }
 

@@ -49,7 +49,11 @@ pub struct GpsPacket {
 
 impl From<GpsPacket> for UbxGpsInfo {
     fn from(value: GpsPacket) -> Self {
-        UbxGpsInfo::new(value.nmea, value.rxm)
+        let mut value = value;
+        if value.nmea.sat_views.is_empty() {
+            value.nmea.insert_gsv(&mut value.nmea_raw);
+        }
+        UbxGpsInfo::new(value.nmea, value.rxm, value.nmea_raw)
     }
 }
 
@@ -71,7 +75,7 @@ pub fn parse_nmea(buf: Vec<u8>) -> Result<(NmeaGpsInfo, NmeaMsgGroup), GpsError>
 }
 
 /// Parse a buffer to extract GPS positional information and satellite carrier phase information.
-pub fn parse_messages(buf: Vec<u8>) -> Result<(UbxGpsInfo, NmeaMsgGroup), GpsError> {
+pub fn parse_messages(buf: Vec<u8>) -> Result<UbxGpsInfo, GpsError> {
     // 1. Separate into UBX and NMEA messages
     let (ubx, buf) = split_ubx(buf);
     // 2. Parse UBX messages
@@ -88,8 +92,8 @@ pub fn parse_messages(buf: Vec<u8>) -> Result<(UbxGpsInfo, NmeaMsgGroup), GpsErr
     let buf = std::str::from_utf8(&buf).map_err(|e| GpsError::ParseError(e.to_string()))?;
     let mut gpsmsg = RawNmea::parse_str(buf);
     let nmea = NmeaGpsInfo::create(&mut gpsmsg, true)?;
-    let gpsinfo = UbxGpsInfo::new(nmea, rxm.pop());
-    Ok((gpsinfo, gpsmsg))
+    let gpsinfo = UbxGpsInfo::new(nmea, rxm.pop(), gpsmsg);
+    Ok(gpsinfo)
 }
 
 /// Parse a buffer into a GPS Packet
@@ -134,6 +138,31 @@ pub fn parse_partial(
     Ok((nmea, gpsmsg, ubx.pop()))
 }
 
+/// Parse a buffer partially processed using [parse_partial] into a [GpsPacket]. 
+pub fn from_partial(
+    nmea: NmeaGpsInfo,
+    nmea_raw: NmeaMsgGroup,
+    ubx: Option<UbxMessage>,
+) -> Result<GpsPacket, GpsError> {
+    let mut rxm = Vec::new();
+    if let Some(ubx) = ubx {
+        match UbxRxmRawx::from_message(ubx) {
+            Ok(msg) => {
+                rxm.push(msg);
+            }
+            Err(e) => warn!("Error parsing UBX message: {}", e),
+        }
+    }
+    if rxm.len() > 1 {
+        warn!("More than one RXM message in buffer.");
+    }
+    Ok(GpsPacket {
+        nmea,
+        nmea_raw,
+        rxm: rxm.pop(),
+    })
+}
+
 /// Parse a datafile containing multiple UBX messages separated by a pattern
 pub fn parse_datafile<T: Read>(
     reader: &mut T,
@@ -147,7 +176,7 @@ pub fn parse_datafile<T: Read>(
             if n == 0 {
                 break;
             }
-            if let Ok((res, _)) = parse_messages(buf) {
+            if let Ok(res) = parse_messages(buf) {
                 buffers.push(res);
             } else {
                 warn!("Error parsing datafile: {}", n);
