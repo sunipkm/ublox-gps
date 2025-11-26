@@ -49,7 +49,7 @@ fn main() {
                 tec_writer
                     .store(
                         info.timestamp(),
-                        serde_json::to_string(&info)
+                        json5::to_string(&info)
                             .expect("Could not convert UBX info to JSON string")
                             .as_bytes(),
                     )
