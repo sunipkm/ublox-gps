@@ -135,7 +135,7 @@ impl RawNmea {
                 }
             }
         }
-        res
+        NmeaMsgGroup(res)
     }
 }
 
@@ -182,22 +182,19 @@ pub enum GpsError {
 
 impl NmeaGpsInfo {
     /// Create a new GPS info struct from a hashmap of [`RawNmea`] data.
-    /// 
+    ///
     /// # Arguments
     /// - `data`: A mutable reference to a hashmap of [`RawNmea`] data
     /// - `process_gsv`: A boolean indicating whether to process GSV data
     ///
     /// # Returns
     /// - A result containing the GPS info struct or a [`GpsError`]
-    /// 
+    ///
     /// # Errors
     /// - Returns a [`GpsError`] if the ZDA or GGA data is not found or if parsing fails
-    /// 
-    pub(crate) fn create(
-        data: &mut NmeaMsgGroup,
-        process_gsv: bool,
-    ) -> Result<Self, GpsError> {
-        let time = if let Some(mut zda) = data.remove(b"ZDA") {
+    ///
+    pub(crate) fn create(data: &mut NmeaMsgGroup, process_gsv: bool) -> Result<Self, GpsError> {
+        let time = if let Some(mut zda) = data.0.remove(b"ZDA") {
             let time = loop {
                 if let Some(val) = zda.pop() {
                     if let Ok(zda) = parse_zda(&val.data) {
@@ -216,7 +213,7 @@ impl NmeaGpsInfo {
             return Err(GpsError::NoFix);
         };
 
-        let (loc, quality, msl) = if let Some(mut zda) = data.remove(b"GGA") {
+        let (loc, quality, msl) = if let Some(mut zda) = data.0.remove(b"GGA") {
             let time = loop {
                 if let Some(val) = zda.pop() {
                     if let Ok(gga) = parse_gga(&val.data) {
@@ -253,7 +250,7 @@ impl NmeaGpsInfo {
             ..Default::default()
         };
 
-        if let Some(mut vtg) = data.remove(b"VTG") {
+        if let Some(mut vtg) = data.0.remove(b"VTG") {
             if let Some(vtg) = vtg.pop() {
                 if let Ok(vtg) = parse_vtg(&vtg.data) {
                     info.true_heading = vtg["true_heading"].parse().unwrap_or_default();
@@ -263,7 +260,7 @@ impl NmeaGpsInfo {
             }
         }
 
-        if let Some(mut gsa) = data.remove(b"GSA") {
+        if let Some(mut gsa) = data.0.remove(b"GSA") {
             if let Some(gsa) = gsa.pop() {
                 if let Ok(gsa) = parse_gsa(&gsa.data) {
                     info.pdop = gsa["pdop"].parse().unwrap_or_default();
@@ -274,7 +271,7 @@ impl NmeaGpsInfo {
         }
 
         if process_gsv {
-            if let Some(gsv) = data.remove(b"GSV") {
+            if let Some(gsv) = data.0.remove(b"GSV") {
                 gsv.iter()
                     .filter_map(|x| {
                         let id = x.id;
@@ -300,7 +297,7 @@ impl NmeaGpsInfo {
     }
 
     /// Insert GSV data into the GPS info struct.
-    /// 
+    ///
     /// # Note
     /// [NmeaGpsInfo::insert_gsv] is intended to be used when NMEA
     /// data is processed partially using the [crate::parse_partial]
@@ -311,9 +308,9 @@ impl NmeaGpsInfo {
     ///
     /// # Arguments
     /// - `msgs`: A [`NmeaMsgGroup`] containing GSV data.
-    /// 
+    ///
     pub fn insert_gsv(&mut self, msgs: &mut NmeaMsgGroup) {
-        if let Some(gsv) = msgs.remove(b"GSV") {
+        if let Some(gsv) = msgs.0.remove(b"GSV") {
             gsv.iter()
                 .filter_map(|x| {
                     let id = x.id;

@@ -15,7 +15,7 @@ use std::io::Read;
 
 use log::warn;
 pub use nmea::{GnssSatellite, GpsError, NmeaGpsInfo};
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeMap, Deserialize, Serialize};
 pub use ubx::{
     BeidouFreq, CarrierMeas, GalileoFreq, GlonassFreq, GnssFreq, GpsFreq, QzssFreq, SatPathInfo,
     UbxGpsInfo,
@@ -34,7 +34,8 @@ pub const DEFAULT_DELIM: [u8; 8] = *b"\r\r\n\n\r\r\n\n";
 /// The key is the first three bytes of the message, e.g. "GGA", "GSA", etc.
 /// The value is a vector of RawNmea messages.
 /// The key is a 3-byte array, and the value is a vector of NMEA message strings.
-pub type NmeaMsgGroup = std::collections::HashMap<[u8; 3], Vec<RawNmea>>;
+#[derive(Debug, Clone)]
+pub struct NmeaMsgGroup(std::collections::HashMap<[u8; 3], Vec<RawNmea>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// A GPS Packet, comprised of NMEA message and RXM carrier data
@@ -45,6 +46,44 @@ pub struct GpsPacket {
     pub nmea_raw: NmeaMsgGroup,
     /// Raw RXM carrier data
     pub rxm: Option<UbxRxmRawx>,
+}
+
+impl Serialize for NmeaMsgGroup {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in self.0.iter() {
+            let key = std::str::from_utf8(k).map_err(serde::ser::Error::custom)?;
+            map.serialize_entry(key, v)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for NmeaMsgGroup {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let map: std::collections::HashMap<String, Vec<RawNmea>> =
+            serde::Deserialize::deserialize(deserializer)?;
+        let mut result = std::collections::HashMap::new();
+        for (k, v) in map {
+            let key_bytes = k.as_bytes();
+            if key_bytes.len() != 3 {
+                return Err(serde::de::Error::custom(format!(
+                    "Invalid NMEA message key length: {}",
+                    k
+                )));
+            }
+            let mut key_array = [0u8; 3];
+            key_array.copy_from_slice(&key_bytes[0..3]);
+            result.insert(key_array, v);
+        }
+        Ok(NmeaMsgGroup(result))
+    }
 }
 
 impl From<GpsPacket> for UbxGpsInfo {
@@ -138,7 +177,7 @@ pub fn parse_partial(
     Ok((nmea, gpsmsg, ubx.pop()))
 }
 
-/// Parse a buffer partially processed using [parse_partial] into a [GpsPacket]. 
+/// Parse a buffer partially processed using [parse_partial] into a [GpsPacket].
 pub fn from_partial(
     nmea: NmeaGpsInfo,
     nmea_raw: NmeaMsgGroup,
