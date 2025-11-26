@@ -4,11 +4,7 @@ mod config;
 mod store;
 use chrono::Utc;
 use crossterm::terminal;
-use std::{
-    io::ErrorKind,
-    path::Path,
-    time::Duration,
-};
+use std::{io::ErrorKind, path::Path, time::Duration};
 use ublox_gps_tec::{GnssFreq, GnssSatellite};
 
 pub use config::RecorderCfg;
@@ -17,7 +13,7 @@ use store::{StoreCfg, StoreKind};
 fn main() {
     // Try to load the config file and open the serial port from the config file
     let save_dir = Path::new("./");
-    let mut ser = serialport::new("/dev/ttyUSB0", 115200)
+    let mut ser = serialport::new("/dev/ttyACM3", 115200)
         .open()
         .expect("Failed to open serial port");
     // Set the timeout on the serial port
@@ -28,7 +24,7 @@ fn main() {
     let mut raw_writer =
         StoreCfg::new(raw_dir, StoreKind::Raw, true).expect("Failed to create raw data directory");
     // Create the TEC data directory
-    let tec_dir = save_dir.join("tec");
+    let tec_dir = save_dir.join("ubx");
     let mut tec_writer =
         StoreCfg::new(tec_dir, StoreKind::Json, true).expect("Failed to create TEC data directory");
     // Main loop
@@ -50,15 +46,15 @@ fn main() {
         let ubxinfo = ublox_gps_tec::parse_messages(buf);
         match ubxinfo {
             Ok(info) => {
+                tec_writer
+                    .store(
+                        info.timestamp(),
+                        serde_json::to_string(&info)
+                            .expect("Could not convert UBX info to JSON string")
+                            .as_bytes(),
+                    )
+                    .expect("Failed to store TEC data");
                 if let Some(tec) = ublox_gps_tec::TecInfo::assimilate(&info) {
-                    tec_writer
-                        .store(
-                            tec.timestamp(),
-                            serde_json::to_string(&tec)
-                                .expect("Could not convert TEC data to JSON string")
-                                .as_bytes(),
-                        )
-                        .expect("Failed to store TEC data");
                     let width = terminal::size().expect("Failed to get terminal size").0;
                     // header
                     println!(
